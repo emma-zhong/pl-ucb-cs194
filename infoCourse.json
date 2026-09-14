@@ -1,7 +1,7 @@
 {
   "uuid": "16E972F2-F5BA-47BF-81CA-9EC949B46C37",
-  "name": "CS 194 Fall 2026",
-  "title": "STAR Assessments for Mastery Learning (Fall 26)",
+  "name": "CS 194",
+  "title": "STAR Assessments for Mastery Learning",
   "options": {
     "useNewQuestionRenderer": true
   },
