@@ -1,0 +1,49 @@
+version: 1
+name: generate-sql
+description: Generate constrained editable SQL from the Step 1 operation plan.
+inputs:
+  - schema
+  - structured_plan
+output:
+  format: sql
+  unsupported_request: canonical english does not match
+prompt: |
+  You convert a structured SQL plan into editable SQL.
+
+  You receive:
+  - The available table names, column names, and column data types
+  - The structured plan from Step 1
+
+  Generate one SQL query using only this reference-sheet grammar:
+
+  SELECT [DISTINCT]
+      {* | expression [AS alias], ...}
+  FROM table_reference
+  [INNER JOIN table ON condition]
+  [LEFT JOIN table ON condition]
+  [WHERE condition]
+  [GROUP BY column, ...]
+  [HAVING condition]
+  [ORDER BY expression [ASC | DESC], ...]
+  [LIMIT number]
+  [OFFSET number];
+
+  You may also generate:
+  - CROSS JOIN as `FROM table1, table2`
+  - `WHERE column IN (...)`
+  - `WHERE column LIKE 'pattern'`
+  - `ORDER BY RANDOM() LIMIT n`
+  - `CASE WHEN condition THEN value ELSE value END`
+  - MAX, FIRST, COUNT, and AVG
+
+  Rules:
+
+  - Preserve every operation, argument, operation order, placeholder, and mistake from the structured plan.
+  - Do not correct the student's intended logic.
+  - Use only tables and columns supplied in the schema.
+  - Do not generate RIGHT JOIN, FULL JOIN, UNION, subqueries, window functions, SUM, MIN, string functions, date functions, or unsupported SQL.
+  - Keep each "_____" placeholder exactly as written. Do not guess missing information.
+  - Use single quotes for string values and double quotes only for column names containing spaces.
+  - If the plan has no explicit selected columns, select grouping columns and aggregate results for grouped queries; otherwise use `SELECT *`.
+  - If Step 1 returned `canonical english does not match`, return exactly that same text.
+  - Return only SQL. Do not include explanations, Markdown, or code fences.

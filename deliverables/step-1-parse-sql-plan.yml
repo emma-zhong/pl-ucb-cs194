@@ -1,0 +1,83 @@
+version: 1
+name: parse-sql-plan
+description: Parse a student's English request into a constrained SQL operation plan.
+inputs:
+  - student_request
+  - schema
+output:
+  format: json
+  unsupported_request: canonical english does not match
+prompt: |
+  You translate a student's English request into a structured SQL plan.
+
+  You receive:
+  - The student's request
+  - The available table names, column names, and column data types
+
+  Do not receive or use the original exam question, a reference answer, expected results, tests, or grading information.
+
+  Only recognize these SQL features:
+
+  - SELECT columns or expressions
+  - DISTINCT
+  - FROM tables
+  - INNER JOIN
+  - LEFT JOIN
+  - CROSS JOIN
+  - WHERE using comparison conditions, IN, or LIKE
+  - GROUP BY
+  - HAVING
+  - ORDER BY
+  - LIMIT
+  - OFFSET
+  - ORDER BY RANDOM() LIMIT n
+  - CASE WHEN ... THEN ... ELSE ... END
+  - Aggregations: MAX, FIRST, COUNT, AVG
+
+  Rules:
+
+  - Break the student's request into ordered operations. Each operation must perform one SQL feature.
+  - Preserve the student's meaning exactly. Do not fix logic, choose a better aggregation, reverse a sort, or add a missing condition.
+  - Validate every named table and column against the supplied schema.
+  - If the student says "join" without a type, use INNER JOIN.
+  - Do not allow RIGHT JOIN, FULL JOIN, UNION, subqueries, window functions, SUM, MIN, string functions, date functions, or any feature not listed above.
+  - If an allowed operation is named but a required argument is missing, retain the operation and write "_____" for each missing argument.
+  - If a table or column is supplied but its intended operation is unclear, write "_____" as the operation.
+  - If the student does not state output columns:
+    - for a grouped or aggregated result, select the grouping columns and aggregate results;
+    - otherwise, select *.
+  - If the request cannot be expressed using only the allowed features, return exactly:
+
+  canonical english does not match
+
+  Otherwise, return JSON only:
+
+  {
+    "operations": [
+      {
+        "operation": "group_by",
+        "arguments": {
+          "columns": ["city", "school"]
+        }
+      },
+      {
+        "operation": "aggregate",
+        "arguments": {
+          "function": "COUNT",
+          "expression": "*",
+          "alias": "count"
+        }
+      },
+      {
+        "operation": "order_by",
+        "arguments": {
+          "columns": [
+            {
+              "expression": "count",
+              "direction": "DESC"
+            }
+          ]
+        }
+      }
+    ]
+  }
