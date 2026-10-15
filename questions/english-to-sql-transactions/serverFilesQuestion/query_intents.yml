@@ -1,0 +1,21 @@
+version: 1
+purpose: Translate a student's canonical English analysis plan into one SQLite query.
+
+allowed_operations:
+  - use the transactions table
+  - filter rows with WHERE
+  - group rows with GROUP BY
+  - compute COUNT, COUNT DISTINCT, SUM, AVG, MIN, or MAX
+  - filter grouped results with HAVING
+  - select columns or aggregate expressions
+  - use a read-only subquery when the plan requires a second aggregation
+  - sort with ORDER BY
+  - limit rows with LIMIT and OFFSET
+
+rules:
+  - Preserve the student's stated operations and order of reasoning.
+  - Use only tables and columns present in the supplied schema.
+  - Do not use INSERT, UPDATE, DELETE, DROP, ALTER, PRAGMA, ATTACH, or other writes.
+  - Do not use the reference answer, expected result, or question text to repair the student's plan.
+  - If required information is missing, place the literal token _____ in the corresponding SQL position.
+  - Return exactly one SQL query and no explanation or Markdown.
