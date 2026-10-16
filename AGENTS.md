@@ -85,7 +85,7 @@ ENGLISH_TO_SQL_TIMEOUT_SECONDS=20
 
 The URL and timeout are optional. The model and API key are required. The PrairieLearn host/container must permit outbound HTTPS to the configured endpoint.
 
-The repository's Docker Compose configuration does not currently pass these host variables into the PrairieLearn container. If enabling live LLM requests locally, add explicit environment-variable passthrough to `.devcontainer/docker-compose.yml` without writing secret values into the repository.
+The Docker Compose configuration passes these variables into the PrairieLearn container. Local developers should copy `.devcontainer/.env.example` to the Git-ignored `.devcontainer/.env`, add their own key there, and start Compose with `--env-file .devcontainer/.env`. Never write secret values into committed files.
 
 ## Safety and grading behavior
 
@@ -110,16 +110,17 @@ The Save/Save & Grade distinction is implemented by `pl-intent-console.js`, whic
 
 Run these commands from the repository root.
 
-Start PrairieLearn in the foreground:
+Create a private local environment file, then start PrairieLearn in the foreground:
 
 ```bash
-docker compose -f .devcontainer/docker-compose.yml up
+cp .devcontainer/.env.example .devcontainer/.env
+docker compose --env-file .devcontainer/.env -f .devcontainer/docker-compose.yml up
 ```
 
 Start it in the background:
 
 ```bash
-docker compose -f .devcontainer/docker-compose.yml up -d
+docker compose --env-file .devcontainer/.env -f .devcontainer/docker-compose.yml up -d
 ```
 
 Open PrairieLearn at `http://localhost:3000`.
@@ -127,7 +128,7 @@ Open PrairieLearn at `http://localhost:3000`.
 Stop and remove the containers while retaining the downloaded image and repository files:
 
 ```bash
-docker compose -f .devcontainer/docker-compose.yml down
+docker compose --env-file .devcontainer/.env -f .devcontainer/docker-compose.yml down
 ```
 
 Alternatively, use `stop` and `start` to retain the stopped containers.

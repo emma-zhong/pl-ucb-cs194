@@ -2,11 +2,11 @@ services:
   prairielearn:
     image: prairielearn/prairielearn:latest
     platform: linux/amd64
-  environment:
-    HOST_JOBS_DIR: /tmp/dir-for-ag-jobqueue
-    ENGLISH_TO_SQL_API_KEY: ${ENGLISH_TO_SQL_API_KEY:?Set your Gemini API key}
-    ENGLISH_TO_SQL_MODEL: ${ENGLISH_TO_SQL_MODEL:-gemini-3.8-flash}
-    ENGLISH_TO_SQL_API_URL: ${ENGLISH_TO_SQL_API_URL:-https://generativelanguage.googleapis.com/v1beta/openai/chat/completions}
+    environment:
+      HOST_JOBS_DIR: /tmp/dir-for-ag-jobqueue
+      ENGLISH_TO_SQL_API_KEY: ${ENGLISH_TO_SQL_API_KEY:?Set your Gemini API key}
+      ENGLISH_TO_SQL_MODEL: ${ENGLISH_TO_SQL_MODEL:-gemini-3.8-flash}
+      ENGLISH_TO_SQL_API_URL: ${ENGLISH_TO_SQL_API_URL:-https://generativelanguage.googleapis.com/v1beta/openai/chat/completions}
     ports:
       - 3000:3000
     volumes:

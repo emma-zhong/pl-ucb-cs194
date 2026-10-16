@@ -2,18 +2,62 @@
 
 This course element turns a student's English analysis plan into editable SQL when the student clicks PrairieLearn's **Save** button. Clicking **Save & Grade** preserves and grades the SQL currently in the editor.
 
-## Server configuration
+## Local setup with Docker and Gemini
 
-Set these environment variables on the PrairieLearn server. Never put the API key in `question.html`, `server.py`, an element attribute, or a client-side file.
+Prerequisites:
 
-```text
-ENGLISH_TO_SQL_API_KEY=...
-ENGLISH_TO_SQL_MODEL=...
-ENGLISH_TO_SQL_API_URL=https://api.openai.com/v1/chat/completions
-ENGLISH_TO_SQL_TIMEOUT_SECONDS=20
+- Docker Desktop, or another running Docker Engine with Docker Compose
+- A Gemini API key created in Google AI Studio
+
+From the repository root, copy the committed example configuration:
+
+```bash
+cp .devcontainer/.env.example .devcontainer/.env
 ```
 
-`ENGLISH_TO_SQL_API_URL` is optional and may point to an OpenAI-compatible chat-completions endpoint. The host running PrairieLearn must allow outbound HTTPS to that endpoint.
+Open `.devcontainer/.env` and replace the placeholder with your own Gemini API key:
+
+```text
+ENGLISH_TO_SQL_API_KEY=replace-with-your-own-gemini-api-key
+ENGLISH_TO_SQL_MODEL=gemini-3.8-flash
+ENGLISH_TO_SQL_API_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+```
+
+The real `.devcontainer/.env` file is ignored by Git. Never put the key in `question.html`, `server.py`, an element attribute, a client-side file, `.env.example`, or any committed file.
+
+Start PrairieLearn:
+
+```bash
+docker compose \
+  --env-file .devcontainer/.env \
+  -f .devcontainer/docker-compose.yml \
+  up
+```
+
+Once the logs report that PrairieLearn is ready, open [http://localhost:3000](http://localhost:3000). Keep the terminal open while developing. To run the containers in the background instead, add `-d` after `up`.
+
+Stop PrairieLearn and remove its containers when finished:
+
+```bash
+docker compose \
+  --env-file .devcontainer/.env \
+  -f .devcontainer/docker-compose.yml \
+  down
+```
+
+The downloaded Docker images and repository files remain available, so the same `up` command will start the environment again later.
+
+To verify that the API key reached the container without displaying it:
+
+```bash
+docker compose \
+  --env-file .devcontainer/.env \
+  -f .devcontainer/docker-compose.yml \
+  exec prairielearn \
+  sh -c 'test -n "$ENGLISH_TO_SQL_API_KEY" && echo "Gemini key is configured"'
+```
+
+For a deployed PrairieLearn server, configure the same environment variables through the deployment's secret-management system. The host must allow outbound HTTPS to the configured endpoint. `ENGLISH_TO_SQL_TIMEOUT_SECONDS` may optionally be set and defaults to `20`.
 
 ## Example
 
