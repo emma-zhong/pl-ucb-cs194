@@ -1,20 +1,34 @@
 version: 1
-name: generate-sql
-description: Generate constrained editable SQL from the Step 1 operation plan.
+name: generate-complete-sql
+description: Convert canonical English steps into one complete SQL query, preserving placeholders for missing information.
 inputs:
   - schema
-  - structured_plan
+  - english_steps
 output:
   format: sql
-  unsupported_request: canonical english does not match
+  count: 1
+  begins_with: SELECT
+  ends_with: ";"
 prompt: |
-  You convert a structured SQL plan into editable SQL.
+  RETURN ONE COMPLETE SQL QUERY ONLY.
+
+  Your first output character must be the S in SELECT.
+  Your final output character must be a semicolon.
+  Do not write anything before or after the query.
+
+  PLACEHOLDER INVARIANT:
+  The text "_____" is a literal, immutable placeholder token.
+  If an input step contains "_____", copy "_____" into the corresponding position in the SQL query exactly as written.
+  Never replace "_____" with a table name, column name, value, function, or any information from the schema.
+  This rule applies even when the schema contains only one possible table or column.
+
+  Convert the ordered list of canonical English steps into one complete SQL query.
 
   You receive:
   - The available table names, column names, and column data types
-  - The structured plan from Step 1
+  - The ordered English steps from Step 1
 
-  Generate one SQL query using only this reference-sheet grammar:
+  Generate SQL using only this reference-sheet grammar:
 
   SELECT [DISTINCT]
       {* | expression [AS alias], ...}
@@ -37,13 +51,33 @@ prompt: |
   - MAX, FIRST, COUNT, and AVG
 
   Rules:
-
-  - Preserve every operation, argument, operation order, placeholder, and mistake from the structured plan.
+  - Combine all English steps into one complete SQL query.
+  - Preserve every requested operation, argument, and mistake from the English-step list.
   - Do not correct the student's intended logic.
   - Use only tables and columns supplied in the schema.
   - Do not generate RIGHT JOIN, FULL JOIN, UNION, subqueries, window functions, SUM, MIN, string functions, date functions, or unsupported SQL.
-  - Keep each "_____" placeholder exactly as written. Do not guess missing information.
+  - Preserve every "_____" placeholder from the English steps in the corresponding location in the SQL query.
+  - If required information is missing, use "_____" in its place. Do not infer, guess, or fill in missing information.
+  - The schema may validate names that the student supplied, but it must never replace a "_____" placeholder.
+  - The output must contain at least the same number of "_____" tokens as the input steps.
+  - Include every clause required for valid SQL, including SELECT and FROM.
   - Use single quotes for string values and double quotes only for column names containing spaces.
-  - If the plan has no explicit selected columns, select grouping columns and aggregate results for grouped queries; otherwise use `SELECT *`.
-  - If Step 1 returned `canonical english does not match`, return exactly that same text.
-  - Return only SQL. Do not include explanations, Markdown, or code fences.
+  - If the English-step list has no explicit select step, select grouping columns and aggregate results for grouped queries; otherwise use `SELECT *`.
+  - Return exactly one statement beginning with SELECT and ending with a semicolon.
+  - Do not echo the English steps.
+  - Do not output `sql_steps:`, `english:`, `sql:`, `query:`, or any other label.
+  - Do not return YAML, JSON, explanations, comments, Markdown, or code fences.
+
+  Example input steps:
+  - use table _____
+  - select COUNT(DISTINCT customer_id) as count
+  - filter rows where year = 2023 and total >= 300
+
+  SELECT COUNT(DISTINCT customer_id) AS count
+  FROM _____
+  WHERE year = 2023 AND total >= 300;
+
+  Final check before responding:
+  1. Copy every "_____" token from the input into the query.
+  2. Do not replace a placeholder using the schema.
+  3. Output the SQL statement only. Begin with SELECT. End with a semicolon.
