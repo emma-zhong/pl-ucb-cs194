@@ -1,0 +1,11 @@
+{
+  "controller": "pl-intent-console-regen.py",
+  "dependencies": {
+    "elementScripts": [
+      "pl-intent-console-regen.js"
+    ],
+    "elementStyles": [
+      "pl-intent-console-regen.css"
+    ]
+  }
+}
