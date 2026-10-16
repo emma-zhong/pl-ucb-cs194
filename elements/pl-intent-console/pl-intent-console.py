@@ -29,7 +29,7 @@ def _attributes(element_html):
         "schema_name": f"{name}-result-schema",
         "preview_name": f"{name}-result-preview",
         "runs_name": f"{name}-run-count",
-        "generate_name": f"{name}-generate-on-submit",
+        "generated_from_name": f"{name}-generated-from",
         "data_source": pl.get_string_attrib(element, "data-source"),
         "intent_spec": pl.get_string_attrib(element, "intent-spec"),
         "reference_name": pl.get_string_attrib(element, "reference-name", None),
@@ -124,7 +124,8 @@ def render(element_html, data):
         "source_name": attrs["source_name"],
         "code_name": attrs["code_name"],
         "runs_name": attrs["runs_name"],
-        "generate_name": attrs["generate_name"],
+        "generated_from_name": attrs["generated_from_name"],
+        "generated_from": _answer(data, attrs["generated_from_name"]),
         "source": source,
         "code": code,
         "run_count": _answer(data, attrs["runs_name"], "0"),
@@ -476,31 +477,34 @@ def parse(element_html, data):
     attrs = _attributes(element_html)
     source = _answer(data, attrs["source_name"]).strip()
     code = _answer(data, attrs["code_name"]).strip()
-    generate = _answer(data, attrs["generate_name"], "1") != "0"
+    # The English that produced the SQL currently on screen. Regenerating is
+    # decided by whether the English changed, not by which button was clicked,
+    # because PrairieLearn sends Save and Save & Grade to parse() identically.
+    generated_from = _answer(data, attrs["generated_from_name"]).strip()
     try:
         run_count = int(_answer(data, attrs["runs_name"], "0"))
     except ValueError:
         run_count = 0
 
-    if generate:
-        if not source:
-            data["format_errors"][attrs["name"]] = (
-                "Enter an English analysis plan before clicking Save."
-            )
-        elif run_count >= attrs["max_runs"]:
-            data["format_errors"][attrs["name"]] = (
-                f"This question allows at most {attrs['max_runs']} SQL generations."
-            )
+    error = None
+    regenerated = False
+    if not source:
+        error = "Enter an English analysis plan before submitting."
+    elif source != generated_from or not code:
+        if run_count >= attrs["max_runs"]:
+            error = f"This question allows at most {attrs['max_runs']} SQL generations."
         else:
             try:
                 code = _generate_sql(data, attrs, source)
                 run_count += 1
+                generated_from = source
+                regenerated = True
             except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
-                data["format_errors"][attrs["name"]] = str(exc)
+                error = f"SQL generation failed: {exc}"
 
     columns = []
     rows = []
-    if code and attrs["name"] not in data["format_errors"]:
+    if code and error is None:
         try:
             columns, rows, truncated = _run_query(data, attrs, code, attrs["row_limit"])
             if truncated:
@@ -509,8 +513,19 @@ def parse(element_html, data):
                     + [""] * (len(columns) - 1)
                 )
         except ValueError as exc:
-            data["format_errors"][attrs["name"]] = str(exc)
+            error = str(exc)  # _run_query already prefixes "SQL could not be executed"
 
+    if error is not None:
+        data["format_errors"][attrs["name"]] = error
+    elif regenerated:
+        # A format error makes PrairieLearn skip grading, so freshly generated
+        # SQL is never graded before the student has seen it.
+        data["format_errors"][attrs["name"]] = (
+            "New SQL was generated from your updated plan. "
+            "Review it, then click Save & Grade to grade it."
+        )
+
+    _write_answer(data, attrs["generated_from_name"], generated_from)
     _write_answer(data, attrs["source_name"], source)
     _write_answer(data, attrs["code_name"], code)
     _write_answer(data, attrs["schema_name"], json.dumps(columns))

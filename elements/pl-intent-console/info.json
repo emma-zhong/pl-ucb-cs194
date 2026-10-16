@@ -1,9 +1,6 @@
 {
   "controller": "pl-intent-console.py",
   "dependencies": {
-    "elementScripts": [
-      "pl-intent-console.js"
-    ],
     "elementStyles": [
       "pl-intent-console.css"
     ]

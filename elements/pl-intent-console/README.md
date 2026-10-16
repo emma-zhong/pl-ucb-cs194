@@ -1,6 +1,6 @@
 # `pl-intent-console` (draft)
 
-This course element turns a student's English analysis plan into editable SQL when the student clicks PrairieLearn's **Save** button. Clicking **Save & Grade** preserves and grades the SQL currently in the editor.
+This course element turns a student's English analysis plan into editable SQL. On either **Save** or **Save & Grade**, the element generates new SQL only if the English plan changed since the SQL on screen was generated; freshly generated SQL is shown for review instead of being graded. If the plan is unchanged, the SQL currently in the editor (including the student's edits) is kept, and **Save & Grade** grades it.
 
 ## Local setup with Docker and Gemini
 
