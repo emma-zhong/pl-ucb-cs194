@@ -1,0 +1,170 @@
+version: 1
+implementation: dictionary-plus-llm
+stage: 1-of-2-deterministic-normalization
+description: Normalize explicitly stated phrases before the single LLM call without adding operations.
+
+runtime:
+  type: deterministic_dictionary
+  model_call: false
+  matching:
+    case_sensitive: false
+    require_word_boundaries: true
+    prefer_longest_match: true
+    preserve_unmatched_text: true
+    preserve_matched_arguments: true
+    do_not_match_inside_identifiers_or_quoted_values: true
+
+normalizations:
+  - canonical: use table
+    phrases:
+      - start with the table
+      - start with table
+      - use the table
+      - use table
+
+  - canonical: select
+    phrases:
+      - return the columns
+      - return columns
+      - select the columns
+      - select columns
+
+  - canonical: select distinct
+    phrases:
+      - select unique
+      - return unique
+      - select distinct
+
+  - canonical: filter rows where
+    phrases:
+      - keep only rows where
+      - keep rows where
+      - filter rows where
+
+  - canonical: group rows by
+    phrases:
+      - group the rows by
+      - group rows by
+      - group by
+
+  - canonical: compute count distinct of
+    phrases:
+      - count the distinct
+      - count distinct
+
+  - canonical: compute count of
+    phrases:
+      - count the number of
+      - compute the count of
+      - count
+
+  - canonical: compute sum of
+    phrases:
+      - calculate the sum of
+      - compute the sum of
+      - sum of
+
+  - canonical: compute average of
+    phrases:
+      - calculate the average of
+      - compute the average of
+      - average of
+
+  - canonical: compute minimum of
+    phrases:
+      - calculate the minimum of
+      - compute the minimum of
+      - minimum of
+
+  - canonical: compute maximum of
+    phrases:
+      - calculate the maximum of
+      - compute the maximum of
+      - maximum of
+
+  - canonical: keep groups where
+    phrases:
+      - keep only groups where
+      - keep groups where
+      - filter groups where
+
+  - canonical: aggregate the result with
+    phrases:
+      - aggregate the result with
+      - summarize the result with
+
+  - canonical: order by
+    phrases:
+      - sort the rows by
+      - sort rows by
+      - order by
+
+  - canonical: ascending
+    phrases:
+      - from smallest to largest
+      - in increasing order
+      - ascending
+
+  - canonical: descending
+    phrases:
+      - from largest to smallest
+      - in decreasing order
+      - descending
+
+  - canonical: greater than or equal to
+    phrases:
+      - no less than
+      - at least
+      - greater than or equal to
+
+  - canonical: less than or equal to
+    phrases:
+      - no more than
+      - at most
+      - less than or equal to
+
+  - canonical: greater than
+    phrases:
+      - more than
+      - greater than
+
+  - canonical: less than
+    phrases:
+      - fewer than
+      - less than
+
+  - canonical: equal to
+    phrases:
+      - exactly equal to
+      - equals
+      - equal to
+
+  - canonical: keep the first
+    phrases:
+      - limit the result to
+      - keep the first
+
+  - canonical: skip the first
+    phrases:
+      - offset by
+      - skip the first
+
+non_inference_rules:
+  - Never insert a canonical phrase that did not match student text.
+  - Never map a table or column name to an operation.
+  - Never map the word total by itself to SUM because total may be a column name.
+  - Never map for each by itself to GROUP BY because it can be ambiguous.
+  - Never choose a table, column, function, comparison, grouping, or sort direction.
+  - If phrases overlap, apply only the longest matching phrase.
+  - Record each replacement with the original phrase and its character span for auditing.
+
+output:
+  format: json
+  schema:
+    original_plan: exact student input
+    canonical_plan: input after deterministic replacements
+    replacements:
+      - original: exact matched phrase
+        canonical: replacement phrase
+        start: zero-based start offset
+        end: zero-based exclusive end offset

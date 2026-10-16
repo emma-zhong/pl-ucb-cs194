@@ -1,0 +1,11 @@
+{
+  "controller": "pl-intent-console-two-pass.py",
+  "dependencies": {
+    "elementScripts": [
+      "pl-intent-console-two-pass.js"
+    ],
+    "elementStyles": [
+      "pl-intent-console-two-pass.css"
+    ]
+  }
+}
