@@ -631,9 +631,9 @@ def _run_query(data, attrs, sql, limit):
         raise ValueError("Only SELECT queries are allowed.")
     connection = _database_for_csv(_question_file(data, attrs["data_source"]))
     if hasattr(connection, "setlimit"):
-        connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1_000_000)
-        connection.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, 50_000)
-        connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, 200)
+        connection.setlimit(getattr(sqlite3, "SQLITE_LIMIT_LENGTH"), 1_000_000)
+        connection.setlimit(getattr(sqlite3, "SQLITE_LIMIT_SQL_LENGTH"), 50_000)
+        connection.setlimit(getattr(sqlite3, "SQLITE_LIMIT_COLUMN"), 200)
     allowed_actions = {
         sqlite3.SQLITE_SELECT,
         sqlite3.SQLITE_READ,

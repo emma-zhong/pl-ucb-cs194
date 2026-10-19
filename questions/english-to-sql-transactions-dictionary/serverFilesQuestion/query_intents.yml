@@ -38,8 +38,8 @@ accepted_style:
   interpretation: Canonical phrases inserted by the dictionary are strong evidence. Unmatched prose may also express an operation when its meaning and arguments are explicit.
 
 supported_operations:
-  table_source: requires an explicit table name
-  projection: requires the requested columns or computed result
+  table_source: requires an explicit table name unless database_schema contains exactly one table
+  projection: requires the requested columns or computed result only when the student explicitly requests a projection
   distinct: requires an explicit unique or distinct request
   row_filter: requires a column, comparison, and value
   grouping: requires the grouping entity or column
@@ -55,11 +55,21 @@ grounding_rules:
   - Create an SQL operation only when canonical_plan explicitly expresses it.
   - A schema name, number, or noun alone is not an operation.
   - Preserve the student's stated order, logic, and mistakes.
-  - Do not add a missing filter, grouping, aggregate, DISTINCT, subquery, projection, sort, limit, or offset because it would improve the likely answer.
+  - Do not add a missing filter, grouping, aggregate, DISTINCT, semantic subquery, sort, limit, or offset because it would improve the likely answer.
   - Resolve a plain-language schema label only when the correspondence is direct and unique.
+  - Resolve total dollar amount to column total because it is the only direct schema match.
+  - Interpret for each X and for each unique X as grouping by X. In that construction, unique does not separately request SELECT DISTINCT.
+  - Interpret == as equality and a currency literal such as $100 as numeric value 100.
+  - A comparison against an explicitly stated aggregate is a group filter. A comparison against an ordinary column is a row filter.
   - Copy explicit values and comparison direction.
   - Use a subquery only for an explicit aggregate-over-result operation.
+  - SQL clause order may differ from the plan where SQLite syntax requires it. Compile an explicit ordinary-column filter as WHERE even when it is mentioned after grouping.
   - If an operation or required argument is missing or ambiguous, do not guess from the schema or likely assignment.
+
+sql_scaffolding:
+  - If database_schema contains exactly one table and the plan names no table, use that sole table in FROM.
+  - If the plan gives no explicit projection, select grouping columns followed by explicitly requested aggregates; grouping columns alone when there is no aggregate; otherwise '*'.
+  - Scaffolding may not introduce DISTINCT, a new aggregate, a new grouping column, a predicate, or an outer aggregation.
 
 insufficient_plan_policy:
   response: PLAN_NEEDS_MORE_DETAIL
@@ -87,5 +97,6 @@ prompt: |
   3. If a detail is absent or ambiguous, return exactly PLAN_NEEDS_MORE_DETAIL rather than
      completing it from the schema or a guessed assignment.
   4. Otherwise compile only the grounded operations into one read-only SQLite query.
-  5. Audit every SQL clause and expression against the plan and remove unsupported work.
+  5. Except for the sole-table FROM and default SELECT list allowed by sql_scaffolding,
+     audit every SQL clause and expression against the plan and remove unsupported work.
   6. Emit only the response allowed by output_contract.
