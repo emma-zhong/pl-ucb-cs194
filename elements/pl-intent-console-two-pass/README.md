@@ -1,0 +1,89 @@
+# `pl-intent-console-two-pass` (draft)
+
+This course element uses two LLM calls when the student clicks PrairieLearn's **Save** button. The first call converts the English plan into validated, evidence-grounded JSON steps. The second call converts only those steps into editable SQL. Clicking **Save & Grade** preserves and grades the SQL currently in the editor.
+
+## Local setup with Docker and Gemini
+
+Prerequisites:
+
+- Docker Desktop, or another running Docker Engine with Docker Compose
+- A Gemini API key created in Google AI Studio
+
+From the repository root, copy the committed example configuration:
+
+```bash
+cp .devcontainer/.env.example .devcontainer/.env
+```
+
+Open `.devcontainer/.env` and replace the placeholder with your own Gemini API key:
+
+```text
+ENGLISH_TO_SQL_API_KEY=replace-with-your-own-gemini-api-key
+ENGLISH_TO_SQL_MODEL=gemini-3.8-flash
+ENGLISH_TO_SQL_API_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+```
+
+The real `.devcontainer/.env` file is ignored by Git. Never put the key in `question.html`, `server.py`, an element attribute, a client-side file, `.env.example`, or any committed file.
+
+Start PrairieLearn:
+
+```bash
+docker compose \
+  --env-file .devcontainer/.env \
+  -f .devcontainer/docker-compose.yml \
+  up
+```
+
+Once the logs report that PrairieLearn is ready, open [http://localhost:3000](http://localhost:3000). Keep the terminal open while developing. To run the containers in the background instead, add `-d` after `up`.
+
+Stop PrairieLearn and remove its containers when finished:
+
+```bash
+docker compose \
+  --env-file .devcontainer/.env \
+  -f .devcontainer/docker-compose.yml \
+  down
+```
+
+The downloaded Docker images and repository files remain available, so the same `up` command will start the environment again later.
+
+To verify that the API key reached the container without displaying it:
+
+```bash
+docker compose \
+  --env-file .devcontainer/.env \
+  -f .devcontainer/docker-compose.yml \
+  exec prairielearn \
+  sh -c 'test -n "$ENGLISH_TO_SQL_API_KEY" && echo "Gemini key is configured"'
+```
+
+For a deployed PrairieLearn server, configure the same environment variables through the deployment's secret-management system. The host must allow outbound HTTPS to the configured endpoint. `ENGLISH_TO_SQL_TIMEOUT_SECONDS` may optionally be set and defaults to `20`.
+
+PrairieLearn's question lifecycle timeout must be longer than the provider timeout. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that one-pass and two-pass generation can finish or report their own provider timeout.
+A deployed PrairieLearn administrator must configure an equivalent server-level timeout; this setting cannot be controlled by an individual question.
+
+## Example
+
+```html
+<pl-intent-console-two-pass
+  answers-name="customer_count_sql_two_pass"
+  data-source="transactions.csv"
+  input-modes="english"
+  output-mode="sql"
+  parse-intent-spec="parse_intents.yml"
+  generate-intent-spec="generate_intents.yml"
+  reference-name="reference_sql"
+  generated-code-editable="true"
+  max-runs="10"
+  row-limit="20"
+  weight="1">
+</pl-intent-console-two-pass>
+```
+
+`data-source`, `parse-intent-spec`, and `generate-intent-spec` are resolved inside the question's `serverFilesQuestion` directory. A generation uses two model calls but increments the student's generation count once. The second call runs only when the first call returns an `ok` plan whose operations are supported and whose evidence is copied exactly from the student's input.
+Grading executes the student's query and the reference query against the CSV in a restricted, in-memory SQLite database, then compares result rows without requiring a particular SQL spelling.
+
+The element stores the student's English under `<answers-name>-source` and SQL under `<answers-name>-generated-code`. The first call receives only the CSV schema, parsing specification, and student's English. The second receives only the same schema, generation specification, and validated steps. Neither receives the reference query or grading result.
+
+The server accepts ordinary English analysis plans without enforcing exact canonical lines or a fixed operation order. Before the first model call, it rejects question-like input and recognizable prompt-injection attempts; the assignment question is never included in either request.
+The first response must ground every typed operation in an exact phrase from the student's plan and use operation-specific argument fields. The second response must be exactly one complete `SELECT` or `WITH` statement. Any safety, request, JSON-shape, or SQL-output failure preserves the previous SQL and does not increment the question's generation count.

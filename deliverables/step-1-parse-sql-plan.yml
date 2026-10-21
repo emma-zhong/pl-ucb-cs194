@@ -1,14 +1,14 @@
 version: 1
-name: parse-sql-plan
-description: Parse a student's English request into a constrained SQL operation plan.
+name: parse-sql-english-steps
+description: Break a student's English request into an ordered list of SQL-sized English steps.
 inputs:
   - student_request
   - schema
 output:
-  format: json
+  format: yaml
   unsupported_request: canonical english does not match
 prompt: |
-  You translate a student's English request into a structured SQL plan.
+  You translate a student's English request into a short, ordered list of canonical English steps.
 
   You receive:
   - The student's request
@@ -17,7 +17,6 @@ prompt: |
   Do not receive or use the original exam question, a reference answer, expected results, tests, or grading information.
 
   Only recognize these SQL features:
-
   - SELECT columns or expressions
   - DISTINCT
   - FROM tables
@@ -35,49 +34,26 @@ prompt: |
   - Aggregations: MAX, FIRST, COUNT, AVG
 
   Rules:
-
-  - Break the student's request into ordered operations. Each operation must perform one SQL feature.
+  - Use only tables and columns supplied in the schema.
+  - Break the student's request into ordered steps. Each step must correspond to exactly one SQL instruction or clause.
+  - Write every step in plain, canonical English. Do not write SQL in this step.
+  - Use one of these forms when applicable: select ..., select distinct ..., use table ..., inner join ... on ..., left join ... on ..., cross join ..., filter rows where ..., group by ..., keep groups where ..., compute ... as ..., order by ... ascending/descending, randomly select ... rows, keep the first ... rows, skip the first ... rows, or create ... using case when ... then ... else ....
   - Preserve the student's meaning exactly. Do not fix logic, choose a better aggregation, reverse a sort, or add a missing condition.
-  - Validate every named table and column against the supplied schema.
-  - If the student says "join" without a type, use INNER JOIN.
+  - If the student says "join" without a type, write "inner join ... on ...".
   - Do not allow RIGHT JOIN, FULL JOIN, UNION, subqueries, window functions, SUM, MIN, string functions, date functions, or any feature not listed above.
   - If an allowed operation is named but a required argument is missing, retain the operation and write "_____" for each missing argument.
   - If a table or column is supplied but its intended operation is unclear, write "_____" as the operation.
   - If the student does not state output columns:
-    - for a grouped or aggregated result, select the grouping columns and aggregate results;
-    - otherwise, select *.
+    - for a grouped or aggregated result, write a select step for the grouping columns and aggregate results;
+    - otherwise, write "select all columns".
   - If the request cannot be expressed using only the allowed features, return exactly:
 
   canonical english does not match
 
-  Otherwise, return JSON only:
+  Otherwise, return YAML only in this format:
 
-  {
-    "operations": [
-      {
-        "operation": "group_by",
-        "arguments": {
-          "columns": ["city", "school"]
-        }
-      },
-      {
-        "operation": "aggregate",
-        "arguments": {
-          "function": "COUNT",
-          "expression": "*",
-          "alias": "count"
-        }
-      },
-      {
-        "operation": "order_by",
-        "arguments": {
-          "columns": [
-            {
-              "expression": "count",
-              "direction": "DESC"
-            }
-          ]
-        }
-      }
-    ]
-  }
+  steps:
+    - use table enrollments
+    - select city, school, and COUNT(*) as count
+    - group by city and school
+    - order by count descending
