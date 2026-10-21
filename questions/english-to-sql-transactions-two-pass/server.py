@@ -1,5 +1,7 @@
 def generate(data):
-    data["correct_answers"]["reference_sql"] = """SELECT COUNT(*) AS customer_count
+    data["correct_answers"][
+        "reference_sql"
+    ] = """SELECT COUNT(*) AS customer_count
 FROM (
     SELECT customer_id
     FROM transactions

@@ -10,7 +10,6 @@ import chevron
 import lxml.html
 import prairielearn as pl
 
-
 TEMPLATE_FILE = "pl-intent-console-two-pass.mustache"
 DEFAULT_ROW_LIMIT = 20
 DEFAULT_TIMEOUT_SECONDS = 20
@@ -99,9 +98,13 @@ def _preview_params(columns, rows):
 def prepare(element_html, data):
     attrs = _attributes(element_html)
     if attrs["output_mode"] != "sql":
-        raise ValueError('The draft pl-intent-console-two-pass only supports output-mode="sql".')
+        raise ValueError(
+            'The draft pl-intent-console-two-pass only supports output-mode="sql".'
+        )
     if attrs["input_modes"] != "english":
-        raise ValueError('The draft pl-intent-console-two-pass only supports input-modes="english".')
+        raise ValueError(
+            'The draft pl-intent-console-two-pass only supports input-modes="english".'
+        )
     if attrs["row_limit"] <= 0 or attrs["max_runs"] <= 0:
         raise ValueError("row-limit and max-runs must both be positive.")
 
@@ -202,7 +205,11 @@ def _sql_terminators(text):
         if quote is not None:
             closing = "]" if quote == "[" else quote
             if character == closing:
-                if quote != "[" and index + 1 < len(text) and text[index + 1] == closing:
+                if (
+                    quote != "["
+                    and index + 1 < len(text)
+                    and text[index + 1] == closing
+                ):
                     index += 2
                     continue
                 quote = None
@@ -216,7 +223,9 @@ def _sql_terminators(text):
             terminators.append(index)
         index += 1
     if quote is not None:
-        raise ValueError("The model returned SQL with an unclosed quoted value or identifier.")
+        raise ValueError(
+            "The model returned SQL with an unclosed quoted value or identifier."
+        )
     return terminators
 
 
@@ -229,7 +238,9 @@ def _clean_sql(response_text):
             "The analysis plan needs more specific table, column, comparison, value, grouping, or aggregation details."
         )
     if "```" in text:
-        raise ValueError("The model wrapped its SQL in Markdown instead of returning SQL only.")
+        raise ValueError(
+            "The model wrapped its SQL in Markdown instead of returning SQL only."
+        )
     if not re.match(r"^(?:SELECT|WITH)\b", text, flags=re.IGNORECASE):
         raise ValueError("The model did not return a read-only SQL query.")
     if not text.endswith(";") or not sqlite3.complete_statement(text):
@@ -282,13 +293,17 @@ def _request_timeout():
 def _http_error(status):
     if status in {408, 429, 500, 502, 503, 504}:
         return RuntimeError(
-            "The SQL generation service is temporarily unavailable. Try Save again later; this attempt was not counted against the generation limit."
+            "The SQL generation service is temporarily unavailable. "
+            "Try Save again later; this attempt was not counted against the "
+            "generation limit."
         )
     if status in {401, 403}:
         return RuntimeError(
             "The SQL generation service could not authenticate. Contact the course staff."
         )
-    return RuntimeError(f"The SQL generation service request failed with HTTP {status}.")
+    return RuntimeError(
+        f"The SQL generation service request failed with HTTP {status}."
+    )
 
 
 def _screen_student_input(student_source):
@@ -304,8 +319,10 @@ def _screen_student_input(student_source):
             "Write an analysis plan instead of pasting or restating the assignment question."
         )
     injection_patterns = (
-        r"\b(?:ignore|disregard|override|forget)\b.{0,60}\b(?:instruction|prompt|rule|message|above|previous|prior|everything)s?\b",
-        r"\b(?:follow|obey)\b.{0,40}\b(?:my|these|following|new)\s+(?:instruction|rule|prompt)s?\b",
+        r"\b(?:ignore|disregard|override|forget)\b.{0,60}\b"
+        r"(?:instruction|prompt|rule|message|above|previous|prior|everything)s?\b",
+        r"\b(?:follow|obey)\b.{0,40}\b(?:my|these|following|new)\s+"
+        r"(?:instruction|rule|prompt)s?\b",
         r"\b(?:system|developer|assistant)\s*(?:message|prompt|instructions?|:)",
         r"\b(?:reveal|show|print|repeat)\b.{0,30}\b(?:system|developer|hidden|prompt|instructions?)\b",
         r"\byou\s+are\s+now\b",
@@ -315,7 +332,8 @@ def _screen_student_input(student_source):
     for pattern in injection_patterns:
         if re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL):
             raise ValueError(
-                "Describe only the intended data operations; do not include instructions to the translator or requests for its prompt."
+                "Describe only the intended data operations; do not include "
+                "instructions to the translator or requests for its prompt."
             )
 
 
@@ -357,17 +375,20 @@ def _call_model(system_prompt, user_prompt):
         raise _http_error(exc.code) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise RuntimeError(
-            "The SQL generation service could not be reached. Try Save again later; this attempt was not counted against the generation limit."
+            "The SQL generation service could not be reached. Try Save again later; "
+            "this attempt was not counted against the generation limit."
         ) from exc
     if len(response_bytes) > 2_000_000:
         raise RuntimeError(
-            "The SQL generation service returned an unexpectedly large response. This attempt was not counted against the generation limit."
+            "The SQL generation service returned an unexpectedly large response. "
+            "This attempt was not counted against the generation limit."
         )
     try:
         payload = json.loads(response_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(
-            "The SQL generation service returned an unreadable response. Try Save again; this attempt was not counted against the generation limit."
+            "The SQL generation service returned an unreadable response. "
+            "Try Save again; this attempt was not counted against the generation limit."
         ) from exc
 
     return _extract_model_text(payload)
@@ -392,8 +413,10 @@ AGGREGATE_FUNCTIONS = {"COUNT", "COUNT_DISTINCT", "SUM", "AVG", "MIN", "MAX"}
 
 
 def _is_string_list(value):
-    return isinstance(value, list) and bool(value) and all(
-        isinstance(item, str) and bool(item) for item in value
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, str) and bool(item) for item in value)
     )
 
 
@@ -475,7 +498,9 @@ def _parse_plan_json(response_text, student_source):
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError("The first translation pass did not return valid JSON.") from exc
+        raise ValueError(
+            "The first translation pass did not return valid JSON."
+        ) from exc
     if not isinstance(parsed, dict):
         raise ValueError("The first translation pass must return one JSON object.")
     if set(parsed) != {"status", "steps", "missing"}:
@@ -507,7 +532,9 @@ def _parse_plan_json(response_text, student_source):
             )
         operation = step.get("operation")
         if not isinstance(operation, str) or operation not in PARSE_OPERATIONS:
-            raise ValueError("The first translation pass returned an unsupported operation.")
+            raise ValueError(
+                "The first translation pass returned an unsupported operation."
+            )
         if not isinstance(step.get("arguments"), dict):
             raise ValueError("Every parsed step must contain an arguments object.")
         evidence = step.get("evidence")
@@ -530,7 +557,9 @@ def _parse_plan_json(response_text, student_source):
         raise ValueError("The first translation pass found no explicit operations.")
     if missing:
         raise ValueError(
-            "The first translation pass found missing or ambiguous details. Revise the plan to name every required table, column, comparison, value, and aggregation."
+            "The first translation pass found missing or ambiguous details. "
+            "Revise the plan to name every required table, column, comparison, "
+            "value, and aggregation."
         )
     return parsed
 
@@ -621,7 +650,10 @@ def _database_for_csv(path):
 
     connection.executemany(
         f"INSERT INTO {_quote_identifier(table)} VALUES ({placeholders})",
-        [[convert(row.get(column, ""), types[column]) for column in columns] for row in rows],
+        [
+            [convert(row.get(column, ""), types[column]) for column in columns]
+            for row in rows
+        ],
     )
     return connection
 
@@ -683,13 +715,13 @@ def parse(element_html, data):
 
     if generate:
         if not source:
-            data["format_errors"][attrs["name"]] = (
-                "Enter an English analysis plan before clicking Save."
-            )
+            data["format_errors"][
+                attrs["name"]
+            ] = "Enter an English analysis plan before clicking Save."
         elif run_count >= attrs["max_runs"]:
-            data["format_errors"][attrs["name"]] = (
-                f"This question allows at most {attrs['max_runs']} SQL generations."
-            )
+            data["format_errors"][
+                attrs["name"]
+            ] = f"This question allows at most {attrs['max_runs']} SQL generations."
         else:
             try:
                 code = _generate_sql(data, attrs, source)
@@ -737,7 +769,9 @@ def grade(element_html, data):
         }
         return
     try:
-        _, student_rows, student_truncated = _run_query(data, attrs, code, MAX_GRADE_ROWS)
+        _, student_rows, student_truncated = _run_query(
+            data, attrs, code, MAX_GRADE_ROWS
+        )
         _, reference_rows, reference_truncated = _run_query(
             data, attrs, str(pl.from_json(reference)), MAX_GRADE_ROWS
         )
