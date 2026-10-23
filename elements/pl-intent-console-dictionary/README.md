@@ -62,12 +62,20 @@ For a deployed PrairieLearn server, configure the same environment variables thr
 PrairieLearn's question lifecycle timeout must be longer than the provider timeout. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that one-pass and two-pass generation can finish or report their own provider timeout.
 A deployed PrairieLearn administrator must configure an equivalent server-level timeout; this setting cannot be controlled by an individual question.
 
-## Example
+## Instructor authoring quick start
+
+1. Put each source CSV in the question's `serverFilesQuestion` directory.
+2. Add a database-schema JSON file describing every available SQL table.
+3. Add a canonical dictionary of accepted student phrases.
+4. Add an instructor intent specification describing how recognized operations map to SQL and when generation must fail.
+5. Add the element to `question.html`, and set the reference SQL named by `reference-name` in `server.py`.
+
+For example:
 
 ```html
 <pl-intent-console-dictionary
   answers-name="customer_count_sql_dictionary"
-  data-source="transactions.csv"
+  database-schema="database_schema.json"
   input-modes="english"
   output-mode="sql"
   dictionary="canonical_dictionary.yml"
@@ -80,10 +88,134 @@ A deployed PrairieLearn administrator must configure an equivalent server-level 
 </pl-intent-console-dictionary>
 ```
 
-`data-source`, `dictionary`, and `intent-spec` are resolved inside the question's `serverFilesQuestion` directory. The dictionary is parsed without an LLM and applies case-insensitive, longest-phrase matches outside quoted text. Unmatched wording is preserved so that ordinary, specific English can still reach the translator.
-Grading executes the student's query and the reference query against the CSV in a restricted, in-memory SQLite database, then compares result rows without requiring a particular SQL spelling.
+`database-schema`, `dictionary`, and `intent-spec` are filenames relative to `serverFilesQuestion`.
 
-The element stores the student's English under `<answers-name>-source` and SQL under `<answers-name>-generated-code`. The LLM receives only the CSV schema, generation specification, and dictionary-normalized plan—not the student's original prose, dictionary audit entries, reference query, or grading result.
+## Database schema format
 
-Every dictionary entry declares `kind: operation` or `kind: modifier`, but normalization is not a local grammar check: recognized phrases are replaced and unmatched prose is preserved. Before normalization and any model call, the server rejects question-like input and recognizable prompt-injection attempts.
-The assignment question and original student prose are not sent to the model; it receives only the normalized plan. A failed safety check, provider request, or model-output check preserves the previous SQL and does not increment the question's generation count.
+For a one-table question, the smallest schema is:
+
+```json
+{
+  "tables": [
+    {
+      "name": "transactions",
+      "source": "transactions.csv"
+    }
+  ]
+}
+```
+
+For multiple tables, add an entry for each CSV-backed table:
+
+```json
+{
+  "tables": [
+    {
+      "name": "orders",
+      "source": "orders.csv",
+      "description": "One row per order.",
+      "columns": [
+        {"name": "order_id", "type": "INTEGER"},
+        {"name": "customer_id", "type": "TEXT"}
+      ]
+    },
+    {
+      "name": "customers",
+      "source": "customers.csv",
+      "columns": [
+        {"name": "customer_id", "type": "TEXT"},
+        {"name": "region", "type": "TEXT"}
+      ]
+    }
+  ]
+}
+```
+
+Schema rules:
+
+- `tables` must be a nonempty array.
+- Every table needs a unique, nonempty SQL `name` and a CSV `source`.
+- Every CSV needs a nonempty header with case-insensitively unique column names.
+- Optional `columns` must exactly match the CSV header in the same order.
+- Optional column types are `INTEGER`, `REAL`, or `TEXT`; omitted types are inferred.
+- Optional table and column descriptions are included in the schema shown to the model.
+
+The element validates the schema before generation and builds the model's SQL schema automatically. Instructors do not need to repeat the database definition in the intent specification. For backward compatibility, a one-table question may use `data-source="transactions.csv"` instead of `database-schema`; specify exactly one.
+
+## Canonical dictionary format
+
+The dictionary is parsed without an LLM. Each entry must be an `operation` or a `modifier`, give one canonical phrase, and list the student phrases that map to it. Matching is case-insensitive, prefers the longest phrase, and does not replace text inside quotes.
+
+```yaml
+normalizations:
+  - canonical: group rows by
+    kind: operation
+    phrases:
+      - for each unique
+      - for each
+  - canonical: compute sum of
+    kind: operation
+    phrases:
+      - sum their
+      - sum the
+  - canonical: filter where
+    kind: operation
+    phrases:
+      - filter again for
+      - filter for
+  - canonical: keep filtered rows
+    kind: modifier
+    phrases:
+      - keep those rows only
+      - keep those rows
+```
+
+Use an operation for wording that authorizes a SQL action, such as grouping, aggregation, filtering, sorting, limiting, or joining. Use a modifier only to refine a recognized operation. At least one operation must be recognized before the model is called. Unmatched wording is preserved as a possible argument or connector, but it cannot authorize another SQL operation, comparison, or sort direction.
+
+For multi-table questions, include a canonical `join` operation and appropriate phrases if joins are allowed. The intent specification must require the student to provide both table names and the matching columns.
+
+## Student plan requirements
+
+Table-name requirements depend on the configured schema:
+
+- With one table, the student may omit its name. The element may add that table only as SQL `FROM` scaffolding.
+- With multiple tables, the student must name every table used.
+- A join must name both tables and state the matching columns. The model may not introduce an unnamed table or invent a join.
+
+The dictionary for a transactions question can accept this English plan even though it does not say `transactions`:
+
+```text
+For each unique customer_id and unique transaction_id, sum their total dollar
+amount on each unique transaction. Filter for the sum to be greater than $200,
+then filter year to be equal to 2025.
+```
+
+Before normalization, the server rejects question-like input, recognizable prompt-injection attempts, and dataframe code or programming shorthand such as:
+
+```text
+df = df[df['year'] == 2023] df.groupby('customer_id')
+```
+
+## Intent specification and model boundary
+
+The intent specification defines how recognized canonical operations map to SQLite and which missing details produce `PLAN_ERROR:<REASON>`. Supported reasons cover missing or unsupported operations, tables, columns, comparisons, values, grouping columns, aggregate details, join conditions, sort details, row counts, and ambiguous details.
+
+The model receives only:
+
+- the schema generated from the configured database;
+- the instructor generation specification;
+- the dictionary-normalized plan;
+- exhaustive lists of recognized operations and modifiers; and
+- the configured table names explicitly mentioned in the plan.
+
+It does not receive the original unmatched prose as a separate field, dictionary audit entries, assignment question, reference SQL, expected result, grading outcome, or hidden tests. It must return exactly one complete SQLite `SELECT` or `WITH` statement, or one controlled plan error.
+
+## Saving, previewing, and grading
+
+The element stores the student's English under `<answers-name>-source` and SQL under `<answers-name>-generated-code`.
+
+- **Save** normalizes the plan, generates SQL, overwrites prior SQL, and refreshes the preview.
+- **Save & Grade** preserves and grades the SQL currently visible in the editor; it does not regenerate SQL.
+- A failed local check, provider request, or model-output check preserves the previous SQL and does not increment the generation count.
+
+Student and reference queries run against all configured tables in one restricted, in-memory SQLite database. Only read-only `SELECT` or `WITH` queries are accepted. Grading compares result rows and multiplicity rather than exact SQL text; row order and column labels are ignored.
