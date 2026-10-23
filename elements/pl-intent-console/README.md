@@ -190,3 +190,18 @@ The element stores the student's English under `<answers-name>-source` and SQL u
 - A failed local check, provider request, or model-output check preserves the previous SQL and does not increment the generation count.
 
 Student and reference queries run against the same restricted, in-memory SQLite database. Only read-only `SELECT` or `WITH` queries are accepted. Grading compares result rows and multiplicity rather than exact SQL text; row order and column labels are ignored.
+
+## Server-side diagnostics
+
+Every Save and Save & Grade submission emits structured, single-line JSON events to the
+PrairieLearn server logs. Events from one submission share a `trace_id` and include the
+selected action, each student-input screening decision, table-name filtering, the exact
+processed student request sent as the model's user message, the model's text output,
+validated SQL, preview execution, and grading status. Save & Grade is explicitly logged as
+preserving the editor SQL rather than generating again.
+
+The log deliberately omits the API key, request authorization header, instructor
+specification text, complete provider response, reference SQL, and reference rows. It does
+contain student-authored text and SQL, so production log access and retention should follow
+the course's student-data policy. Search the container output or PrairieLearn log sink for
+`pl-intent-console`, then filter by `trace_id` to follow one submission.

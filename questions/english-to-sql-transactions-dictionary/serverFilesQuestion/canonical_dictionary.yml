@@ -1,18 +1,18 @@
-version: 3
+version: 4
 implementation: dictionary-plus-llm
-stage: 1-of-2-deterministic-normalization
-description: Normalize explicitly stated phrases before the single LLM call without adding operations.
+stage: 1-of-2-llm-mapping
+description: Map explicitly stated student wording to instructor-authored canonical phrases before SQL generation.
 
 runtime:
-  type: deterministic_dictionary
-  model_call: false
-  matching:
-    case_sensitive: false
-    require_word_boundaries: true
-    prefer_longest_match: true
+  type: grounded_llm_dictionary_mapping
+  model_call: true
+  mapping:
+    examples_allow_clear_paraphrases: true
     preserve_unmatched_text: true
     preserve_matched_arguments: true
-    do_not_match_inside_identifiers_or_quoted_values: true
+    require_exact_source_evidence: true
+    require_non_overlapping_source_order: true
+    do_not_map_inside_quoted_values: true
     require_at_least_one_operation_match: true
 
 normalizations:
@@ -208,24 +208,20 @@ normalizations:
       - skip the first
 
 non_inference_rules:
-  - Never insert a canonical phrase that did not match student text.
+  - Never insert a canonical phrase without explicit supporting wording in the student plan.
+  - Treat listed phrases as instructor examples; map a clear ordinary-English paraphrase only when its meaning is unambiguous.
   - Never map a table or column name to an operation.
   - Never map the word total by itself to SUM because total may be a column name.
   - Never choose a table, column, function, comparison, grouping, or sort direction.
-  - If phrases overlap, apply only the longest matching phrase.
-  - Record each replacement with the original phrase and its character span for auditing.
-  - At least one operation phrase must match or the plan is rejected before an LLM call.
+  - Cite the smallest exact substring that expresses each mapping so arguments remain unchanged.
+  - Return mappings in source order without overlaps.
+  - At least one operation must be mapped or the plan is rejected before the SQL-generation call.
   - Preserve unmatched prose only as possible arguments or connectors. Unmatched prose cannot create an operation.
   - Code-like spellings such as groupby, more_than, and df[...] are not canonical English and must not be interpreted as operations.
 
 output:
   format: json
   schema:
-    original_plan: exact student input
-    canonical_plan: input after deterministic replacements
-    replacements:
-      - original: exact matched phrase
+    mappings:
+      - original: exact supporting substring from the student plan
         canonical: replacement phrase
-        kind: operation | modifier
-        start: zero-based start offset
-        end: zero-based exclusive end offset

@@ -1,10 +1,12 @@
 import csv
 import json
+import logging
 import os
 import re
 import sqlite3
 import urllib.error
 import urllib.request
+import uuid
 
 import chevron
 import lxml.html
@@ -15,6 +17,8 @@ DEFAULT_ROW_LIMIT = 20
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_RUNS = 10
 MAX_GRADE_ROWS = 10000
+LOGGER = logging.getLogger(__name__)
+LOG_PREFIX = "pl-intent-console"
 
 PLAN_ERROR_MESSAGES = {
     "NO_OPERATION": (
@@ -55,6 +59,26 @@ PLAN_ERROR_MESSAGES = {
         "comparison values, calculation inputs, and sort directions."
     ),
 }
+
+
+def _new_trace_id():
+    return uuid.uuid4().hex[:12]
+
+
+def _log_event(trace_id, event, **fields):
+    """Write one machine-readable event to the PrairieLearn server logs.
+
+    Warning level is intentional: Python's default logging configuration filters out
+    lower levels, while these diagnostics need to be visible without changing the
+    PrairieLearn container configuration.
+    """
+    payload = {
+        "component": LOG_PREFIX,
+        "trace_id": trace_id,
+        "event": event,
+        **fields,
+    }
+    LOGGER.warning("%s %s", LOG_PREFIX, json.dumps(payload, ensure_ascii=False))
 
 
 def _attributes(element_html):
@@ -379,8 +403,15 @@ def _sql_terminators(text):
     return terminators
 
 
-def _clean_sql(response_text):
+def _clean_sql(response_text, trace_id=None):
     text = response_text.strip()
+    if trace_id:
+        _log_event(
+            trace_id,
+            "model_output_received",
+            model_output=response_text,
+            output_characters=len(response_text),
+        )
     if not text:
         raise ValueError("The model returned an empty response instead of SQL.")
     if text == "PLAN_NEEDS_MORE_DETAIL":
@@ -409,6 +440,8 @@ def _clean_sql(response_text):
         raise ValueError("The model returned an incomplete SQL statement.")
     if _sql_terminators(text) != [len(text) - 1]:
         raise ValueError("The model returned more than one SQL statement.")
+    if trace_id:
+        _log_event(trace_id, "model_output_accepted", generated_sql=text)
     return text
 
 
@@ -468,18 +501,35 @@ def _http_error(status):
     )
 
 
-def _screen_student_input(student_source):
+def _screen_student_input(student_source, trace_id=None):
+    if trace_id:
+        _log_event(
+            trace_id,
+            "student_input_screen_started",
+            student_plan=student_source,
+            characters=len(student_source),
+        )
     if len(student_source) > 5000:
+        if trace_id:
+            _log_event(trace_id, "student_input_rejected", check="length")
         raise ValueError("The analysis plan must be 5,000 characters or fewer.")
     text = student_source.strip()
     if not text:
+        if trace_id:
+            _log_event(trace_id, "student_input_rejected", check="nonempty")
         raise ValueError("Enter an English analysis plan before clicking Save.")
+    if trace_id:
+        _log_event(trace_id, "student_input_check_passed", check="length_and_nonempty")
     if "?" in text or re.match(
         r"^(?:how|what|which|who|when|where|why)\b", text, flags=re.IGNORECASE
     ):
+        if trace_id:
+            _log_event(trace_id, "student_input_rejected", check="assignment_question")
         raise ValueError(
             "Write an analysis plan instead of pasting or restating the assignment question."
         )
+    if trace_id:
+        _log_event(trace_id, "student_input_check_passed", check="not_assignment_question")
     code_patterns = (
         r"\bdf\s*=",
         r"\bdf\s*\[",
@@ -487,10 +537,14 @@ def _screen_student_input(student_source):
         r"\b(?:more_than|less_than|equal_to)\s*=",
     )
     if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in code_patterns):
+        if trace_id:
+            _log_event(trace_id, "student_input_rejected", check="programming_shorthand")
         raise ValueError(
             "Write the analysis plan as English data operations, not dataframe code "
             "or programming shorthand."
         )
+    if trace_id:
+        _log_event(trace_id, "student_input_check_passed", check="english_not_code")
     injection_patterns = (
         r"\b(?:ignore|disregard|override|forget)\b.{0,60}\b"
         r"(?:instruction|prompt|rule|message|above|previous|prior|everything)s?\b",
@@ -504,10 +558,14 @@ def _screen_student_input(student_source):
     )
     for pattern in injection_patterns:
         if re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL):
+            if trace_id:
+                _log_event(trace_id, "student_input_rejected", check="prompt_injection")
             raise ValueError(
                 "Describe only the intended data operations; do not include "
                 "instructions to the translator or requests for its prompt."
             )
+    if trace_id:
+        _log_event(trace_id, "student_input_screen_passed")
 
 
 def _named_tables(student_source, tables):
@@ -522,8 +580,15 @@ def _named_tables(student_source, tables):
     ]
 
 
-def _table_context(student_source, tables):
+def _table_context(student_source, tables, trace_id=None):
     named_tables = _named_tables(student_source, tables)
+    if trace_id:
+        _log_event(
+            trace_id,
+            "table_filter_result",
+            available_tables=[table["name"] for table in tables],
+            named_tables=named_tables,
+        )
     if len(tables) > 1 and not named_tables:
         available = ", ".join(table["name"] for table in tables)
         raise ValueError(
@@ -540,10 +605,10 @@ def _table_context(student_source, tables):
     return named_tables
 
 
-def _generate_sql(data, attrs, student_source):
-    _screen_student_input(student_source)
+def _generate_sql(data, attrs, student_source, trace_id=None):
+    _screen_student_input(student_source, trace_id)
     tables = _load_database_schema(data, attrs)
-    named_tables = _table_context(student_source, tables)
+    named_tables = _table_context(student_source, tables, trace_id)
     api_key = os.environ.get("ENGLISH_TO_SQL_API_KEY")
     api_url = os.environ.get(
         "ENGLISH_TO_SQL_API_URL", "https://api.openai.com/v1/chat/completions"
@@ -582,6 +647,15 @@ Return only the SQL statement or PLAN_ERROR reason required by the specification
         },
         ensure_ascii=False,
     )
+    if trace_id:
+        _log_event(
+            trace_id,
+            "model_request_prepared",
+            model=model,
+            processed_student_request=json.loads(user_prompt),
+            system_prompt_included=True,
+            instructor_specification_included=True,
+        )
     body = json.dumps(
         {
             "model": model,
@@ -602,17 +676,25 @@ Return only the SQL statement or PLAN_ERROR reason required by the specification
         method="POST",
     )
     timeout = _request_timeout()
+    if trace_id:
+        _log_event(trace_id, "model_request_started", timeout_seconds=timeout)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             response_bytes = response.read(2_000_001)
     except urllib.error.HTTPError as exc:
+        if trace_id:
+            _log_event(trace_id, "model_request_failed", failure="http", status=exc.code)
         raise _http_error(exc.code) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
+        if trace_id:
+            _log_event(trace_id, "model_request_failed", failure="connection_or_timeout")
         raise RuntimeError(
             "The SQL generation service could not be reached. Try Save again later; "
             "this attempt was not counted against the generation limit."
         ) from exc
     if len(response_bytes) > 2_000_000:
+        if trace_id:
+            _log_event(trace_id, "model_request_failed", failure="response_too_large")
         raise RuntimeError(
             "The SQL generation service returned an unexpectedly large response. "
             "This attempt was not counted against the generation limit."
@@ -620,12 +702,15 @@ Return only the SQL statement or PLAN_ERROR reason required by the specification
     try:
         payload = json.loads(response_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if trace_id:
+            _log_event(trace_id, "model_request_failed", failure="unreadable_response")
         raise RuntimeError(
             "The SQL generation service returned an unreadable response. "
             "Try Save again; this attempt was not counted against the generation limit."
         ) from exc
-
-    return _clean_sql(_extract_model_text(payload))
+    if trace_id:
+        _log_event(trace_id, "model_request_completed", response_bytes=len(response_bytes))
+    return _clean_sql(_extract_model_text(payload), trace_id)
 
 
 def _quote_identifier(identifier):
@@ -665,8 +750,17 @@ def _database_for_schema(data, attrs):
     return connection
 
 
-def _run_query(data, attrs, sql, limit):
+def _run_query(data, attrs, sql, limit, trace_id=None, purpose="query"):
+    if trace_id:
+        _log_event(
+            trace_id,
+            "sql_execution_started",
+            purpose=purpose,
+            row_limit=limit,
+        )
     if not re.match(r"^\s*(?:SELECT|WITH)\b", sql, flags=re.IGNORECASE):
+        if trace_id:
+            _log_event(trace_id, "sql_execution_rejected", purpose=purpose, check="read_only")
         raise ValueError("Only SELECT queries are allowed.")
     connection = _database_for_schema(data, attrs)
     if hasattr(connection, "setlimit"):
@@ -703,8 +797,24 @@ def _run_query(data, attrs, sql, limit):
         display_rows = [
             ["NULL" if value is None else str(value) for value in row] for row in rows
         ]
+        if trace_id:
+            _log_event(
+                trace_id,
+                "sql_execution_completed",
+                purpose=purpose,
+                columns=columns,
+                returned_rows=len(display_rows),
+                truncated=truncated,
+            )
         return columns, display_rows, truncated
     except sqlite3.Error as exc:
+        if trace_id:
+            _log_event(
+                trace_id,
+                "sql_execution_failed",
+                purpose=purpose,
+                error=str(exc),
+            )
         raise ValueError(f"SQL could not be executed: {exc}") from exc
     finally:
         connection.close()
@@ -712,6 +822,8 @@ def _run_query(data, attrs, sql, limit):
 
 def parse(element_html, data):
     attrs = _attributes(element_html)
+    trace_id = _new_trace_id()
+    data.setdefault("_pl_intent_console_trace_ids", {})[attrs["name"]] = trace_id
     source = _answer(data, attrs["source_name"]).strip()
     code = _answer(data, attrs["code_name"]).strip()
     generate = _answer(data, attrs["generate_name"], "1") != "0"
@@ -720,27 +832,61 @@ def parse(element_html, data):
     except ValueError:
         run_count = 0
 
+    action = "save" if generate else "save_and_grade"
+    _log_event(
+        trace_id,
+        "submission_received",
+        action=action,
+        answers_name=attrs["name"],
+        run_count=run_count,
+        max_runs=attrs["max_runs"],
+        student_plan=source,
+        editor_sql=code,
+    )
+
     if generate:
         if not source:
             data["format_errors"][
                 attrs["name"]
             ] = "Enter an English analysis plan before clicking Save."
+            _log_event(trace_id, "generation_skipped", reason="empty_student_plan")
         elif run_count >= attrs["max_runs"]:
             data["format_errors"][
                 attrs["name"]
             ] = f"This question allows at most {attrs['max_runs']} SQL generations."
+            _log_event(trace_id, "generation_skipped", reason="generation_limit")
         else:
             try:
-                code = _generate_sql(data, attrs, source)
+                code = _generate_sql(data, attrs, source, trace_id)
                 run_count += 1
+                _log_event(
+                    trace_id,
+                    "generation_succeeded",
+                    generated_sql=code,
+                    run_count=run_count,
+                )
             except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
                 data["format_errors"][attrs["name"]] = str(exc)
+                _log_event(trace_id, "generation_failed", error=str(exc))
+    else:
+        _log_event(
+            trace_id,
+            "generation_skipped",
+            reason="save_and_grade_preserves_editor_sql",
+        )
 
     columns = []
     rows = []
     if code and attrs["name"] not in data["format_errors"]:
         try:
-            columns, rows, truncated = _run_query(data, attrs, code, attrs["row_limit"])
+            columns, rows, truncated = _run_query(
+                data,
+                attrs,
+                code,
+                attrs["row_limit"],
+                trace_id,
+                "preview",
+            )
             if truncated:
                 rows.append(
                     [f"Preview limited to {attrs['row_limit']} rows."]
@@ -748,12 +894,21 @@ def parse(element_html, data):
                 )
         except ValueError as exc:
             data["format_errors"][attrs["name"]] = str(exc)
+            _log_event(trace_id, "preview_failed", error=str(exc))
 
     _write_answer(data, attrs["source_name"], source)
     _write_answer(data, attrs["code_name"], code)
     _write_answer(data, attrs["schema_name"], json.dumps(columns))
     _write_answer(data, attrs["preview_name"], json.dumps(rows))
     _write_answer(data, attrs["runs_name"], str(run_count))
+    _log_event(
+        trace_id,
+        "parse_completed",
+        action=action,
+        run_count=run_count,
+        has_format_error=attrs["name"] in data["format_errors"],
+        preview_rows=len(rows),
+    )
 
 
 def _canonical_rows(rows):
@@ -762,10 +917,16 @@ def _canonical_rows(rows):
 
 def grade(element_html, data):
     attrs = _attributes(element_html)
+    trace_id = data.get("_pl_intent_console_trace_ids", {}).get(attrs["name"])
+    if not trace_id:
+        trace_id = _new_trace_id()
+    _log_event(trace_id, "grading_started", answers_name=attrs["name"])
     if attrs["reference_name"] is None or attrs["name"] in data["format_errors"]:
+        _log_event(trace_id, "grading_skipped", reason="not_configured_or_format_error")
         return
     reference = data["correct_answers"].get(attrs["reference_name"])
     if reference is None:
+        _log_event(trace_id, "grading_skipped", reason="reference_unavailable")
         return
     code = _answer(data, attrs["code_name"]).strip()
     if not code:
@@ -774,10 +935,12 @@ def grade(element_html, data):
             "weight": attrs["weight"],
             "feedback": "No SQL query was submitted.",
         }
+        _log_event(trace_id, "grading_completed", correct=False, reason="empty_sql")
         return
+    _log_event(trace_id, "student_sql_selected_for_grading", student_sql=code)
     try:
         _, student_rows, student_truncated = _run_query(
-            data, attrs, code, MAX_GRADE_ROWS
+            data, attrs, code, MAX_GRADE_ROWS, trace_id, "student_grading"
         )
         _, reference_rows, reference_truncated = _run_query(
             data, attrs, str(pl.from_json(reference)), MAX_GRADE_ROWS
@@ -794,9 +957,16 @@ def grade(element_html, data):
                 else "Your SQL ran, but its result did not match the expected result."
             ),
         }
+        _log_event(
+            trace_id,
+            "grading_completed",
+            correct=correct,
+            student_row_count=len(student_rows),
+        )
     except ValueError as exc:
         data["partial_scores"][attrs["name"]] = {
             "score": 0,
             "weight": attrs["weight"],
             "feedback": str(exc),
         }
+        _log_event(trace_id, "grading_failed", error=str(exc))

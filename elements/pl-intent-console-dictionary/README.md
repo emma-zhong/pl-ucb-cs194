@@ -1,6 +1,6 @@
 # `pl-intent-console-dictionary` (draft)
 
-This course element first normalizes instructor-authored phrases with a deterministic dictionary, then uses one LLM call to convert the normalized plan into editable SQL when the student clicks PrairieLearn's **Save** button. Clicking **Save & Grade** preserves and grades the SQL currently in the editor.
+This course element uses one LLM pass to map a student's wording through an instructor-authored canonical dictionary, then a second LLM pass to convert the normalized plan into editable SQL when the student clicks PrairieLearn's **Save** button. Clicking **Save & Grade** preserves and grades the SQL currently in the editor.
 
 ## Local setup with Docker and Gemini
 
@@ -59,7 +59,7 @@ docker compose \
 
 For a deployed PrairieLearn server, configure the same environment variables through the deployment's secret-management system. The host must allow outbound HTTPS to the configured endpoint. `ENGLISH_TO_SQL_TIMEOUT_SECONDS` may optionally be set and defaults to `20`.
 
-PrairieLearn's question lifecycle timeout must be longer than the provider timeout. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that one-pass and two-pass generation can finish or report their own provider timeout.
+PrairieLearn's question lifecycle timeout must be long enough for both provider calls. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that generation can finish or report its own provider timeout.
 A deployed PrairieLearn administrator must configure an equivalent server-level timeout; this setting cannot be controlled by an individual question.
 
 ## Instructor authoring quick start
@@ -144,7 +144,7 @@ The element validates the schema before generation and builds the model's SQL sc
 
 ## Canonical dictionary format
 
-The dictionary is parsed without an LLM. Each entry must be an `operation` or a `modifier`, give one canonical phrase, and list the student phrases that map to it. Matching is case-insensitive, prefers the longest phrase, and does not replace text inside quotes.
+Each entry must be an `operation` or a `modifier`, give one canonical phrase, and list example student phrases that map to it. The first model pass receives these mappings and the student's plan, identifies exact source spans, and returns the appropriate canonical phrases. This means instructors can adjust accepted wording by editing the mapping examples rather than changing server-side regular expressions. Clear ordinary-English paraphrases of the examples may also be mapped; the pass may not infer operations from the assignment, schema, or likely answer.
 
 ```yaml
 normalizations:
@@ -170,7 +170,7 @@ normalizations:
       - keep those rows
 ```
 
-Use an operation for wording that authorizes a SQL action, such as grouping, aggregation, filtering, sorting, limiting, or joining. Use a modifier only to refine a recognized operation. At least one operation must be recognized before the model is called. Unmatched wording is preserved as a possible argument or connector, but it cannot authorize another SQL operation, comparison, or sort direction.
+Use an operation for wording that authorizes a SQL action, such as grouping, aggregation, filtering, sorting, limiting, or joining. Use a modifier only to refine a recognized operation. The server validates the first pass against the instructor's canonical entries, requires exact non-overlapping evidence from the student's plan, and requires at least one recognized operation before making the SQL-generation call. Unmatched wording is preserved as a possible argument or connector, but it cannot authorize another SQL operation, comparison, or sort direction.
 
 For multi-table questions, include a canonical `join` operation and appropriate phrases if joins are allowed. The intent specification must require the student to provide both table names and the matching columns.
 
@@ -190,7 +190,7 @@ amount on each unique transaction. Filter for the sum to be greater than $200,
 then filter year to be equal to 2025.
 ```
 
-Before normalization, the server rejects question-like input, recognizable prompt-injection attempts, and dataframe code or programming shorthand such as:
+Before the mapping pass, the server rejects question-like input, recognizable prompt-injection attempts, and dataframe code or programming shorthand such as:
 
 ```text
 df = df[df['year'] == 2023] df.groupby('customer_id')
@@ -200,11 +200,11 @@ df = df[df['year'] == 2023] df.groupby('customer_id')
 
 The intent specification defines how recognized canonical operations map to SQLite and which missing details produce `PLAN_ERROR:<REASON>`. Supported reasons cover missing or unsupported operations, tables, columns, comparisons, values, grouping columns, aggregate details, join conditions, sort details, row counts, and ambiguous details.
 
-The model receives only:
+The mapping pass receives only the instructor's dictionary mappings and the student's English plan. The SQL-generation pass receives only:
 
 - the schema generated from the configured database;
 - the instructor generation specification;
-- the dictionary-normalized plan;
+- the validated dictionary-normalized plan;
 - exhaustive lists of recognized operations and modifiers; and
 - the configured table names explicitly mentioned in the plan.
 
@@ -214,7 +214,7 @@ It does not receive the original unmatched prose as a separate field, dictionary
 
 The element stores the student's English under `<answers-name>-source` and SQL under `<answers-name>-generated-code`.
 
-- **Save** normalizes the plan, generates SQL, overwrites prior SQL, and refreshes the preview.
+- **Save** maps and normalizes the plan, generates SQL, overwrites prior SQL, and refreshes the preview.
 - **Save & Grade** preserves and grades the SQL currently visible in the editor; it does not regenerate SQL.
 - A failed local check, provider request, or model-output check preserves the previous SQL and does not increment the generation count.
 

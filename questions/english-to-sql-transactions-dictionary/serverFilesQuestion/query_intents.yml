@@ -1,7 +1,7 @@
-version: 4
+version: 5
 implementation: dictionary-plus-llm
 stage: 2-of-2-normalized-plan-to-sql
-purpose: Translate a safely screened, dictionary-normalized analysis plan into one SQLite query.
+purpose: Translate a safely screened, model-mapped, server-validated canonical plan into one SQLite query.
 
 trust_boundary:
   authoritative_inputs:
