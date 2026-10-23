@@ -4,9 +4,11 @@ services:
     platform: linux/amd64
     environment:
       HOST_JOBS_DIR: /tmp/dir-for-ag-jobqueue
+      PL_CONFIG_PATH: /course/.devcontainer/prairielearn-config.json
       ENGLISH_TO_SQL_API_KEY: ${ENGLISH_TO_SQL_API_KEY:?Set your Gemini API key}
       ENGLISH_TO_SQL_MODEL: ${ENGLISH_TO_SQL_MODEL:-gemini-3.8-flash}
       ENGLISH_TO_SQL_API_URL: ${ENGLISH_TO_SQL_API_URL:-https://generativelanguage.googleapis.com/v1beta/openai/chat/completions}
+      ENGLISH_TO_SQL_TIMEOUT_SECONDS: ${ENGLISH_TO_SQL_TIMEOUT_SECONDS:-20}
     ports:
       - 3000:3000
     volumes:

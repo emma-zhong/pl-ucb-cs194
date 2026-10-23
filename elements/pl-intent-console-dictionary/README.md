@@ -59,6 +59,9 @@ docker compose \
 
 For a deployed PrairieLearn server, configure the same environment variables through the deployment's secret-management system. The host must allow outbound HTTPS to the configured endpoint. `ENGLISH_TO_SQL_TIMEOUT_SECONDS` may optionally be set and defaults to `20`.
 
+PrairieLearn's question lifecycle timeout must be longer than the provider timeout. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that one-pass and two-pass generation can finish or report their own provider timeout.
+A deployed PrairieLearn administrator must configure an equivalent server-level timeout; this setting cannot be controlled by an individual question.
+
 ## Example
 
 ```html
@@ -77,8 +80,10 @@ For a deployed PrairieLearn server, configure the same environment variables thr
 </pl-intent-console-dictionary>
 ```
 
-`data-source`, `dictionary`, and `intent-spec` are resolved inside the question's `serverFilesQuestion` directory. The dictionary is parsed without an LLM and applies case-insensitive, longest-phrase matches outside quoted text. Unmatched wording is preserved so that ordinary, specific English can still reach the translator. Grading executes the student's query and the reference query against the CSV in a restricted, in-memory SQLite database, then compares result rows without requiring a particular SQL spelling.
+`data-source`, `dictionary`, and `intent-spec` are resolved inside the question's `serverFilesQuestion` directory. The dictionary is parsed without an LLM and applies case-insensitive, longest-phrase matches outside quoted text. Unmatched wording is preserved so that ordinary, specific English can still reach the translator.
+Grading executes the student's query and the reference query against the CSV in a restricted, in-memory SQLite database, then compares result rows without requiring a particular SQL spelling.
 
 The element stores the student's English under `<answers-name>-source` and SQL under `<answers-name>-generated-code`. The LLM receives only the CSV schema, generation specification, and dictionary-normalized plan—not the student's original prose, dictionary audit entries, reference query, or grading result.
 
-Every dictionary entry declares `kind: operation` or `kind: modifier`, but normalization is not a local grammar check: recognized phrases are replaced and unmatched prose is preserved. Before normalization and any model call, the server rejects question-like input and recognizable prompt-injection attempts. The assignment question and original student prose are not sent to the model; it receives only the normalized plan. A failed safety check, provider request, or model-output check preserves the previous SQL and does not increment the question's generation count.
+Every dictionary entry declares `kind: operation` or `kind: modifier`, but normalization is not a local grammar check: recognized phrases are replaced and unmatched prose is preserved. Before normalization and any model call, the server rejects question-like input and recognizable prompt-injection attempts.
+The assignment question and original student prose are not sent to the model; it receives only the normalized plan. A failed safety check, provider request, or model-output check preserves the previous SQL and does not increment the question's generation count.

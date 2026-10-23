@@ -43,10 +43,10 @@ accepted_style:
 
 supported_operations:
   table_source:
-    required_detail: an explicit table name
+    required_detail: an explicit table name, unless database_schema contains exactly one table
     examples_of_evidence: [use table transactions, start with transactions]
   projection:
-    required_detail: the columns or computed result to return
+    required_detail: the columns or computed result to return, when the student explicitly requests a projection
     examples_of_evidence: [return store_id, show the average total]
   distinct:
     required_detail: an explicit request for unique or distinct values
@@ -73,18 +73,28 @@ grounding_rules:
   - Create an SQL operation only when student_plan contains words that explicitly express that operation.
   - A table name, column name, number, or noun alone is not evidence for an operation.
   - Preserve the order and logic the student describes, including mistakes.
-  - Do not add a missing filter, grouping, aggregate, DISTINCT, subquery, projection, sort, limit, or offset because it would improve the answer.
+  - Do not add a missing filter, grouping, aggregate, DISTINCT, semantic subquery, sort, limit, or offset because it would improve the answer.
   - Resolve a plain-language schema label only when the correspondence is direct and unique, such as customer to customer_id in this schema. Do not choose between multiple plausible columns.
+  - Interpret total dollar amount as column total because it is the only direct schema match.
+  - Interpret for each X and for each unique X as grouping by X. In that construction, unique describes the groups and does not separately request SELECT DISTINCT.
+  - Interpret == as equality and a currency literal such as $100 as numeric value 100.
+  - A comparison against an explicitly stated aggregate is a group filter. A comparison against an ordinary column is a row filter.
   - Copy explicit values and comparison direction. Do not strengthen, weaken, or reverse a comparison.
   - Use a subquery only when the plan explicitly asks to aggregate an already grouped or aggregated result.
+  - SQL clause order may differ from the student's prose where SQLite syntax requires it. In particular, compile an explicit ordinary-column filter as WHERE even when the student mentions it after grouping.
   - If a requested operation lacks a required detail, do not guess the detail from the schema or from likely assignment intent.
   - Copy an explicit unknown identifier rather than silently replacing it with a schema identifier.
+
+sql_scaffolding:
+  - If database_schema contains exactly one table and the student names no table, use that sole table in FROM. This is mandatory syntax, not an inferred data operation.
+  - If the student gives no explicit projection, emit the smallest mechanically useful SELECT list: grouping columns followed by explicitly requested aggregates; grouping columns alone when there is no aggregate; otherwise '*'.
+  - The scaffolding rule may not introduce DISTINCT, a new aggregate, a new grouping column, a new predicate, or an outer aggregation.
 
 insufficient_plan_policy:
   response: PLAN_NEEDS_MORE_DETAIL
   use_when:
     - no supported data operation is explicit
-    - a required table, column, comparison, value, aggregate function, or aggregate input has two or more plausible interpretations
+    - a required column, comparison, value, aggregate function, or aggregate input has two or more plausible interpretations
     - completing the SQL would require inventing an operation or argument
   do_not_use_when: The plan is unconventional or logically incorrect but still explicit enough to translate.
 
@@ -108,6 +118,7 @@ prompt: |
   3. If any required detail is missing or ambiguous, return exactly
      PLAN_NEEDS_MORE_DETAIL. Do not fill the gap from the schema or a guessed assignment.
   4. Otherwise compile only the grounded operations into one read-only SQLite query.
-  5. Audit the SQL: every clause, aggregate, subquery, projected expression, and modifier
-     must have supporting student wording. Remove anything unsupported.
+  5. Audit the SQL: except for the sole-table FROM and default SELECT list allowed by
+     sql_scaffolding, every clause, aggregate, subquery, expression, and modifier must have
+     supporting student wording. Remove anything unsupported.
   6. Emit only the response allowed by output_contract.

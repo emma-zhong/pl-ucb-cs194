@@ -47,9 +47,10 @@ operator_mapping:
 
 compilation_rules:
   - Process steps in array order. Compile every step exactly once.
-  - use_table supplies the sole FROM table. Copy arguments.table exactly.
-  - select supplies the complete list of non-aggregate projected identifiers. Copy arguments.expressions in order. Apply DISTINCT only when arguments.distinct is true. Every aggregate step separately adds its aggregate expression and alias to the same inner projection; do not require or repeat that alias in select.
-  - filter_rows supplies one WHERE predicate. Map arguments.comparison through operator_mapping. Multiple filter_rows steps combine with AND in step order.
+  - use_table supplies the FROM table. Copy arguments.table exactly. If there is no use_table step and database_schema contains exactly one table, use that sole table as mandatory SQL scaffolding.
+  - select supplies the complete list of explicitly requested non-aggregate projected identifiers. Copy arguments.expressions in order. Apply DISTINCT only when arguments.distinct is true. Every aggregate step separately adds its aggregate expression and alias to the same inner projection; do not require or repeat that alias in select.
+  - If there is no select step, construct the smallest mechanically useful inner SELECT list: group_rows columns followed by all explicit aggregate expressions; group_rows columns alone if there is no aggregate; otherwise '*'. This projection is mandatory SQL scaffolding and does not authorize a new operation.
+  - filter_rows supplies one WHERE predicate, even if its step occurs after group_rows or aggregate in the array. Map arguments.comparison through operator_mapping. Multiple filter_rows steps combine with AND in step order.
   - Serialize a numeric predicate value as a number. Serialize a string predicate value as one SQLite single-quoted literal and double every embedded single quote. Never treat a string value as SQL syntax or an identifier.
   - group_rows supplies the complete GROUP BY list in arguments.columns.
   - aggregate supplies one aggregate expression and its explicit alias. COUNT_DISTINCT compiles as COUNT(DISTINCT expression). Other functions compile as FUNCTION(expression).
@@ -61,7 +62,7 @@ compilation_rules:
   - SQL clause order may differ from step order only where SQLite syntax requires it. This does not authorize adding or deleting an operation.
   - Quote an explicit identifier only when SQLite requires quoting. Never rename it or substitute a schema identifier.
   - If an explicit identifier is absent from the schema, keep it unchanged so SQLite reports the mistake. Do not repair it.
-  - Preserve incorrect but valid logic. Do not add DISTINCT, WHERE, GROUP BY, HAVING, an aggregate, a subquery, a projected column, sorting, LIMIT, or OFFSET unless a corresponding step exists.
+  - Preserve incorrect but valid logic. Apart from the sole-table FROM and default SELECT list explicitly allowed above, do not add DISTINCT, WHERE, GROUP BY, HAVING, an aggregate, a subquery, a projected column, sorting, LIMIT, or OFFSET unless a corresponding step exists.
 
 output_contract:
   format: raw_sql

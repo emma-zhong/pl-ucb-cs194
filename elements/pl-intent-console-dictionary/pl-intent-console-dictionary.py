@@ -10,7 +10,6 @@ import chevron
 import lxml.html
 import prairielearn as pl
 
-
 TEMPLATE_FILE = "pl-intent-console-dictionary.mustache"
 DEFAULT_ROW_LIMIT = 20
 DEFAULT_TIMEOUT_SECONDS = 20
@@ -99,9 +98,13 @@ def _preview_params(columns, rows):
 def prepare(element_html, data):
     attrs = _attributes(element_html)
     if attrs["output_mode"] != "sql":
-        raise ValueError('The draft pl-intent-console-dictionary only supports output-mode="sql".')
+        raise ValueError(
+            'The draft pl-intent-console-dictionary only supports output-mode="sql".'
+        )
     if attrs["input_modes"] != "english":
-        raise ValueError('The draft pl-intent-console-dictionary only supports input-modes="english".')
+        raise ValueError(
+            'The draft pl-intent-console-dictionary only supports input-modes="english".'
+        )
     if attrs["row_limit"] <= 0 or attrs["max_runs"] <= 0:
         raise ValueError("row-limit and max-runs must both be positive.")
 
@@ -203,7 +206,11 @@ def _sql_terminators(text):
         if quote is not None:
             closing = "]" if quote == "[" else quote
             if character == closing:
-                if quote != "[" and index + 1 < len(text) and text[index + 1] == closing:
+                if (
+                    quote != "["
+                    and index + 1 < len(text)
+                    and text[index + 1] == closing
+                ):
                     index += 2
                     continue
                 quote = None
@@ -217,7 +224,9 @@ def _sql_terminators(text):
             terminators.append(index)
         index += 1
     if quote is not None:
-        raise ValueError("The model returned SQL with an unclosed quoted value or identifier.")
+        raise ValueError(
+            "The model returned SQL with an unclosed quoted value or identifier."
+        )
     return terminators
 
 
@@ -230,7 +239,9 @@ def _clean_sql(response_text):
             "The analysis plan needs more specific table, column, comparison, value, grouping, or aggregation details."
         )
     if "```" in text:
-        raise ValueError("The model wrapped its SQL in Markdown instead of returning SQL only.")
+        raise ValueError(
+            "The model wrapped its SQL in Markdown instead of returning SQL only."
+        )
     if not re.match(r"^(?:SELECT|WITH)\b", text, flags=re.IGNORECASE):
         raise ValueError("The model did not return a read-only SQL query.")
     if not text.endswith(";") or not sqlite3.complete_statement(text):
@@ -283,13 +294,17 @@ def _request_timeout():
 def _http_error(status):
     if status in {408, 429, 500, 502, 503, 504}:
         return RuntimeError(
-            "The SQL generation service is temporarily unavailable. Try Save again later; this attempt was not counted against the generation limit."
+            "The SQL generation service is temporarily unavailable. "
+            "Try Save again later; this attempt was not counted against the "
+            "generation limit."
         )
     if status in {401, 403}:
         return RuntimeError(
             "The SQL generation service could not authenticate. Contact the course staff."
         )
-    return RuntimeError(f"The SQL generation service request failed with HTTP {status}.")
+    return RuntimeError(
+        f"The SQL generation service request failed with HTTP {status}."
+    )
 
 
 def _dictionary_entries(dictionary_text):
@@ -319,9 +334,11 @@ def _dictionary_entries(dictionary_text):
         if canonical is not None and reading_phrases and phrase_match:
             entries.append((phrase_match.group(1), canonical, kind))
             continue
-        if line.strip() and not line.lstrip().startswith("#") and len(line) - len(
-            line.lstrip()
-        ) <= 2:
+        if (
+            line.strip()
+            and not line.lstrip().startswith("#")
+            and len(line) - len(line.lstrip()) <= 2
+        ):
             canonical = None
             kind = None
             reading_phrases = False
@@ -347,8 +364,10 @@ def _screen_student_input(student_source):
             "Write an analysis plan instead of pasting or restating the assignment question."
         )
     injection_patterns = (
-        r"\b(?:ignore|disregard|override|forget)\b.{0,60}\b(?:instruction|prompt|rule|message|above|previous|prior|everything)s?\b",
-        r"\b(?:follow|obey)\b.{0,40}\b(?:my|these|following|new)\s+(?:instruction|rule|prompt)s?\b",
+        r"\b(?:ignore|disregard|override|forget)\b.{0,60}\b"
+        r"(?:instruction|prompt|rule|message|above|previous|prior|everything)s?\b",
+        r"\b(?:follow|obey)\b.{0,40}\b(?:my|these|following|new)\s+"
+        r"(?:instruction|rule|prompt)s?\b",
         r"\b(?:system|developer|assistant)\s*(?:message|prompt|instructions?|:)",
         r"\b(?:reveal|show|print|repeat)\b.{0,30}\b(?:system|developer|hidden|prompt|instructions?)\b",
         r"\byou\s+are\s+now\b",
@@ -358,7 +377,8 @@ def _screen_student_input(student_source):
     for pattern in injection_patterns:
         if re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL):
             raise ValueError(
-                "Describe only the intended data operations; do not include instructions to the translator or requests for its prompt."
+                "Describe only the intended data operations; do not include "
+                "instructions to the translator or requests for its prompt."
             )
 
 
@@ -368,12 +388,10 @@ def _normalize_plan(student_source, entries):
     }
     alternatives = "|".join(
         re.escape(phrase)
-        for phrase, _canonical, _kind in sorted(
-            entries, key=lambda item: -len(item[0])
-        )
+        for phrase, _canonical, _kind in sorted(entries, key=lambda item: -len(item[0]))
     )
     pattern = re.compile(
-        rf'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?P<phrase>(?<!\w)(?:{alternatives})(?!\w))''',
+        rf""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?P<phrase>(?<!\w)(?:{alternatives})(?!\w))""",
         flags=re.IGNORECASE,
     )
     replacements = []
@@ -415,7 +433,9 @@ def _generate_sql(data, attrs, student_source):
         )
 
     dictionary_text = _read_question_file(data, attrs["dictionary"])
-    normalized_plan = _normalize_plan(student_source, _dictionary_entries(dictionary_text))
+    normalized_plan = _normalize_plan(
+        student_source, _dictionary_entries(dictionary_text)
+    )
     intent_spec = _read_question_file(data, attrs["intent_spec"])
     system_prompt = f"""ROLE
 You are a grounded translator from a dictionary-normalized English analysis plan to SQLite.
@@ -468,17 +488,20 @@ Return only the single SQL statement required by the specification."""
         raise _http_error(exc.code) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise RuntimeError(
-            "The SQL generation service could not be reached. Try Save again later; this attempt was not counted against the generation limit."
+            "The SQL generation service could not be reached. Try Save again later; "
+            "this attempt was not counted against the generation limit."
         ) from exc
     if len(response_bytes) > 2_000_000:
         raise RuntimeError(
-            "The SQL generation service returned an unexpectedly large response. This attempt was not counted against the generation limit."
+            "The SQL generation service returned an unexpectedly large response. "
+            "This attempt was not counted against the generation limit."
         )
     try:
         payload = json.loads(response_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(
-            "The SQL generation service returned an unreadable response. Try Save again; this attempt was not counted against the generation limit."
+            "The SQL generation service returned an unreadable response. "
+            "Try Save again; this attempt was not counted against the generation limit."
         ) from exc
 
     return _clean_sql(_extract_model_text(payload))
@@ -509,7 +532,10 @@ def _database_for_csv(path):
 
     connection.executemany(
         f"INSERT INTO {_quote_identifier(table)} VALUES ({placeholders})",
-        [[convert(row.get(column, ""), types[column]) for column in columns] for row in rows],
+        [
+            [convert(row.get(column, ""), types[column]) for column in columns]
+            for row in rows
+        ],
     )
     return connection
 
@@ -519,9 +545,9 @@ def _run_query(data, attrs, sql, limit):
         raise ValueError("Only SELECT queries are allowed.")
     connection = _database_for_csv(_question_file(data, attrs["data_source"]))
     if hasattr(connection, "setlimit"):
-        connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1_000_000)
-        connection.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, 50_000)
-        connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, 200)
+        connection.setlimit(getattr(sqlite3, "SQLITE_LIMIT_LENGTH"), 1_000_000)
+        connection.setlimit(getattr(sqlite3, "SQLITE_LIMIT_SQL_LENGTH"), 50_000)
+        connection.setlimit(getattr(sqlite3, "SQLITE_LIMIT_COLUMN"), 200)
     allowed_actions = {
         sqlite3.SQLITE_SELECT,
         sqlite3.SQLITE_READ,
@@ -571,13 +597,13 @@ def parse(element_html, data):
 
     if generate:
         if not source:
-            data["format_errors"][attrs["name"]] = (
-                "Enter an English analysis plan before clicking Save."
-            )
+            data["format_errors"][
+                attrs["name"]
+            ] = "Enter an English analysis plan before clicking Save."
         elif run_count >= attrs["max_runs"]:
-            data["format_errors"][attrs["name"]] = (
-                f"This question allows at most {attrs['max_runs']} SQL generations."
-            )
+            data["format_errors"][
+                attrs["name"]
+            ] = f"This question allows at most {attrs['max_runs']} SQL generations."
         else:
             try:
                 code = _generate_sql(data, attrs, source)
@@ -625,7 +651,9 @@ def grade(element_html, data):
         }
         return
     try:
-        _, student_rows, student_truncated = _run_query(data, attrs, code, MAX_GRADE_ROWS)
+        _, student_rows, student_truncated = _run_query(
+            data, attrs, code, MAX_GRADE_ROWS
+        )
         _, reference_rows, reference_truncated = _run_query(
             data, attrs, str(pl.from_json(reference)), MAX_GRADE_ROWS
         )

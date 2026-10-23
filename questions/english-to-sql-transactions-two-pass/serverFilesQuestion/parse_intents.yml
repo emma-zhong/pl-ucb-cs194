@@ -26,6 +26,7 @@ accepted_style:
   - Exact canonical phrases, one-operation-per-line formatting, and a fixed operation order are not required.
   - The plan must nevertheless state each intended operation and enough arguments to make that operation unambiguous.
   - SQL aliases do not need to be written by the student; a short neutral alias may be derived from an explicitly stated aggregate solely as SQL scaffolding.
+  - The table name and output projection may be omitted. The second pass supplies only the mandatory scaffolding defined in its specification.
 
 operation_schema:
   use_table:
@@ -57,9 +58,15 @@ interpretation_rules:
   - Preserve the student's stated operation order and logic, including mistakes.
   - Common equivalents are allowed when direct, such as keep for filter, for each for grouping, total across for SUM, and number of for COUNT.
   - Resolve a plain-language schema label only when its correspondence to one schema column is direct and unique.
+  - Resolve total dollar amount to column total because it is the only direct schema match.
+  - Parse for each X and for each unique X as one group_rows operation on X. Do not also emit select with distinct true merely because unique occurs inside that grouping phrase.
+  - Parse == as comparison eq and a currency literal such as $100 as JSON number 100.
+  - A comparison against the result of an explicitly stated aggregate is filter_groups. A comparison against an ordinary column is filter_rows.
+  - A filter_rows step remains a row filter even when it is mentioned after a grouping or aggregate step; SQL clause ordering is handled by the compiler.
   - Remove angle brackets used only to mark an explicitly written schema name, such as <transactions>; the argument value is transactions.
   - When an aggregate is explicit but no alias is written, create a neutral alias from the explicit function and expression. The alias must not introduce a new operation or meaning.
   - Do not infer a filter, grouping, aggregate, DISTINCT, subquery, projection, sort direction, limit, or offset from the schema or likely goal.
+  - Do not emit use_table when the student names no table, and do not emit select when the student requests no output projection. Their absence does not make the plan incomplete.
   - aggregate_result is allowed only when the plan explicitly requests an aggregate over an already grouped or aggregated result.
   - Use status incomplete when a stated operation lacks a required argument.
   - Use status ambiguous when two or more supported interpretations remain plausible.

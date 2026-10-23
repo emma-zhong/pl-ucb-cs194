@@ -59,6 +59,9 @@ docker compose \
 
 For a deployed PrairieLearn server, configure the same environment variables through the deployment's secret-management system. The host must allow outbound HTTPS to the configured endpoint. `ENGLISH_TO_SQL_TIMEOUT_SECONDS` may optionally be set and defaults to `20`.
 
+PrairieLearn's question lifecycle timeout must be longer than the provider timeout. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that one-pass and two-pass generation can finish or report their own provider timeout.
+A deployed PrairieLearn administrator must configure an equivalent server-level timeout; this setting cannot be controlled by an individual question.
+
 ## Example
 
 ```html
@@ -80,4 +83,5 @@ Both `data-source` and `intent-spec` are resolved inside the question's `serverF
 
 The element stores the student's English under `<answers-name>-source` and SQL under `<answers-name>-generated-code`. The LLM receives only the CSV schema, instructor intent specification, and student's English—not the reference query or grading result.
 
-The server accepts ordinary English analysis plans without enforcing exact canonical lines or a fixed operation order. Before any model call, it rejects question-like input and recognizable prompt-injection attempts; the assignment question is never included in the model request. A failed safety check, provider request, or model-output check preserves the previously generated SQL and does not increment the question's generation count. Model output must be exactly one complete `SELECT` or `WITH` statement; prose, Markdown fences, comments, incomplete SQL, and multiple statements are rejected rather than repaired.
+The server accepts ordinary English analysis plans without enforcing exact canonical lines or a fixed operation order. Before any model call, it rejects question-like input and recognizable prompt-injection attempts; the assignment question is never included in the model request.
+A failed safety check, provider request, or model-output check preserves the previously generated SQL and does not increment the question's generation count. Model output must be exactly one complete `SELECT` or `WITH` statement; prose, Markdown fences, comments, incomplete SQL, and multiple statements are rejected rather than repaired.
