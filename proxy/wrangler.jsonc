@@ -1,0 +1,30 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "english-to-sql-proxy",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-19",
+	"durable_objects": {
+		"bindings": [
+			// One Job per PrairieLearn variant; one global Budget for daily caps.
+			{ "name": "JOBS", "class_name": "Job" },
+			{ "name": "BUDGET", "class_name": "Budget" }
+		]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Job", "Budget"] }],
+	"vars": {
+		"OPENAI_API_URL": "https://api.openai.com/v1/chat/completions",
+		"ALLOWED_MODELS": "gpt-4.1-mini,gpt-5.4-mini",
+		// These models reject "temperature", so the proxy leaves it out for them.
+		"NO_TEMPERATURE_MODELS": "gpt-5.5,gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra,gpt-6-luna,gpt-6-sol,gpt-6-astra,gpt-6.1-sol",
+		"MAX_GENERATIONS_PER_VARIANT": "10",
+		"MAX_PER_USER_PER_DAY": "50",
+		"MAX_TOTAL_PER_DAY": "300",
+		"MAX_COMPLETION_TOKENS": "1000"
+	},
+	// Secrets (never in this file): OPENAI_API_KEY and COURSE_TOKEN.
+	// Deployed: `npx wrangler secret put <NAME>`. Local: .dev.vars (Git-ignored).
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true
+}

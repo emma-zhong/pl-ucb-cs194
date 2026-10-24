@@ -1,0 +1,3 @@
+# Copy to .dev.vars (Git-ignored) for `npx wrangler dev`. Never commit real values.
+OPENAI_API_KEY=sk-replace-me
+COURSE_TOKEN=replace-with-output-of-the-token-command-in-README
