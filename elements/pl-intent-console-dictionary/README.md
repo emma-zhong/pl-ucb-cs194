@@ -1,10 +1,6 @@
 # `pl-intent-console-dictionary` (draft)
 
-<<<<<<< HEAD
-This course element first normalizes instructor-authored phrases with a deterministic dictionary, then uses one LLM call to convert the normalized plan into editable SQL when the student clicks PrairieLearn's **Save** button. Clicking **Save & Grade** preserves and grades the SQL currently in the editor.
-=======
 This course element uses one LLM pass to map a student's wording through an instructor-authored canonical dictionary, then a second LLM pass to convert the normalized plan into editable SQL when the student clicks PrairieLearn's **Save** button. Clicking **Save & Grade** preserves and grades the SQL currently in the editor.
->>>>>>> origin/master
 
 ## Local setup with Docker and Gemini
 
@@ -63,12 +59,6 @@ docker compose \
 
 For a deployed PrairieLearn server, configure the same environment variables through the deployment's secret-management system. The host must allow outbound HTTPS to the configured endpoint. `ENGLISH_TO_SQL_TIMEOUT_SECONDS` may optionally be set and defaults to `20`.
 
-<<<<<<< HEAD
-PrairieLearn's question lifecycle timeout must be longer than the provider timeout. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that one-pass and two-pass generation can finish or report their own provider timeout.
-A deployed PrairieLearn administrator must configure an equivalent server-level timeout; this setting cannot be controlled by an individual question.
-
-## Example
-=======
 PrairieLearn's question lifecycle timeout must be long enough for both provider calls. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that generation can finish or report its own provider timeout.
 A deployed PrairieLearn administrator must configure an equivalent server-level timeout; this setting cannot be controlled by an individual question.
 
@@ -81,16 +71,11 @@ A deployed PrairieLearn administrator must configure an equivalent server-level 
 5. Add the element to `question.html`, and set the reference SQL named by `reference-name` in `server.py`.
 
 For example:
->>>>>>> origin/master
 
 ```html
 <pl-intent-console-dictionary
   answers-name="customer_count_sql_dictionary"
-<<<<<<< HEAD
-  data-source="transactions.csv"
-=======
   database-schema="database_schema.json"
->>>>>>> origin/master
   input-modes="english"
   output-mode="sql"
   dictionary="canonical_dictionary.yml"
@@ -103,15 +88,6 @@ For example:
 </pl-intent-console-dictionary>
 ```
 
-<<<<<<< HEAD
-`data-source`, `dictionary`, and `intent-spec` are resolved inside the question's `serverFilesQuestion` directory. The dictionary is parsed without an LLM and applies case-insensitive, longest-phrase matches outside quoted text. Unmatched wording is preserved so that ordinary, specific English can still reach the translator.
-Grading executes the student's query and the reference query against the CSV in a restricted, in-memory SQLite database, then compares result rows without requiring a particular SQL spelling.
-
-The element stores the student's English under `<answers-name>-source` and SQL under `<answers-name>-generated-code`. The LLM receives only the CSV schema, generation specification, and dictionary-normalized plan—not the student's original prose, dictionary audit entries, reference query, or grading result.
-
-Every dictionary entry declares `kind: operation` or `kind: modifier`, but normalization is not a local grammar check: recognized phrases are replaced and unmatched prose is preserved. Before normalization and any model call, the server rejects question-like input and recognizable prompt-injection attempts.
-The assignment question and original student prose are not sent to the model; it receives only the normalized plan. A failed safety check, provider request, or model-output check preserves the previous SQL and does not increment the question's generation count.
-=======
 `database-schema`, `dictionary`, and `intent-spec` are filenames relative to `serverFilesQuestion`.
 
 ## Database schema format
@@ -271,4 +247,3 @@ docker compose \
 
 Set `ENGLISH_TO_SQL_DICTIONARY_LOG_FILE` on the PrairieLearn service to use another writable
 path.
->>>>>>> origin/master

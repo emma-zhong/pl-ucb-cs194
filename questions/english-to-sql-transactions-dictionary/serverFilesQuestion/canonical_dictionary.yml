@@ -1,20 +1,3 @@
-<<<<<<< HEAD
-version: 1
-implementation: dictionary-plus-llm
-stage: 1-of-2-deterministic-normalization
-description: Normalize explicitly stated phrases before the single LLM call without adding operations.
-
-runtime:
-  type: deterministic_dictionary
-  model_call: false
-  matching:
-    case_sensitive: false
-    require_word_boundaries: true
-    prefer_longest_match: true
-    preserve_unmatched_text: true
-    preserve_matched_arguments: true
-    do_not_match_inside_identifiers_or_quoted_values: true
-=======
 version: 4
 implementation: dictionary-plus-llm
 stage: 1-of-2-llm-mapping
@@ -31,7 +14,6 @@ runtime:
     require_non_overlapping_source_order: true
     do_not_map_inside_quoted_values: true
     require_at_least_one_operation_match: true
->>>>>>> origin/master
 
 normalizations:
   - canonical: use table
@@ -65,23 +47,18 @@ normalizations:
       - keep rows where
       - filter rows where
 
-<<<<<<< HEAD
-=======
   - canonical: filter where
     kind: operation
     phrases:
       - filter again for
       - filter for
 
->>>>>>> origin/master
   - canonical: group rows by
     kind: operation
     phrases:
       - group the rows by
       - group rows by
       - group by
-<<<<<<< HEAD
-=======
       - for each unique
       - for each
 
@@ -94,7 +71,6 @@ normalizations:
       - join tables on
       - combine
       - join
->>>>>>> origin/master
 
   - canonical: compute count distinct of
     kind: operation
@@ -116,11 +92,8 @@ normalizations:
       - calculate the sum of
       - compute the sum of
       - compute sum of
-<<<<<<< HEAD
-=======
       - sum their
       - sum the
->>>>>>> origin/master
 
   - canonical: compute average of
     kind: operation
@@ -216,15 +189,12 @@ normalizations:
       - does not equal
       - not equal to
 
-<<<<<<< HEAD
-=======
   - canonical: keep filtered rows
     kind: modifier
     phrases:
       - keep those rows only
       - keep those rows
 
->>>>>>> origin/master
   - canonical: keep the first
     kind: operation
     phrases:
@@ -238,16 +208,6 @@ normalizations:
       - skip the first
 
 non_inference_rules:
-<<<<<<< HEAD
-  - Never insert a canonical phrase that did not match student text.
-  - Never map a table or column name to an operation.
-  - Never map the word total by itself to SUM because total may be a column name.
-  - Never map for each by itself to GROUP BY because it can be ambiguous.
-  - Never choose a table, column, function, comparison, grouping, or sort direction.
-  - If phrases overlap, apply only the longest matching phrase.
-  - Record each replacement with the original phrase and its character span for auditing.
-  - Matching is a wording normalization pass, not a validity judgment. Preserve all unmatched prose for the LLM to interpret under the generation specification.
-=======
   - Never insert a canonical phrase without explicit supporting wording in the student plan.
   - Treat listed phrases as instructor examples; map a clear ordinary-English paraphrase only when its meaning is unambiguous.
   - Never map a table or column name to an operation.
@@ -258,22 +218,10 @@ non_inference_rules:
   - At least one operation must be mapped or the plan is rejected before the SQL-generation call.
   - Preserve unmatched prose only as possible arguments or connectors. Unmatched prose cannot create an operation.
   - Code-like spellings such as groupby, more_than, and df[...] are not canonical English and must not be interpreted as operations.
->>>>>>> origin/master
 
 output:
   format: json
   schema:
-<<<<<<< HEAD
-    original_plan: exact student input
-    canonical_plan: input after deterministic replacements
-    replacements:
-      - original: exact matched phrase
-        canonical: replacement phrase
-        kind: operation | modifier
-        start: zero-based start offset
-        end: zero-based exclusive end offset
-=======
     mappings:
       - original: exact supporting substring from the student plan
         canonical: replacement phrase
->>>>>>> origin/master

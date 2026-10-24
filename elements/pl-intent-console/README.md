@@ -62,9 +62,6 @@ For a deployed PrairieLearn server, configure the same environment variables thr
 PrairieLearn's question lifecycle timeout must be longer than the provider timeout. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that one-pass and two-pass generation can finish or report their own provider timeout.
 A deployed PrairieLearn administrator must configure an equivalent server-level timeout; this setting cannot be controlled by an individual question.
 
-<<<<<<< HEAD
-## Example
-=======
 ## Instructor authoring quick start
 
 1. Put each source CSV in the question's `serverFilesQuestion` directory.
@@ -74,16 +71,11 @@ A deployed PrairieLearn administrator must configure an equivalent server-level 
 5. Set the reference SQL named by `reference-name` in `server.py`.
 
 For example:
->>>>>>> origin/master
 
 ```html
 <pl-intent-console
   answers-name="customer_count_sql"
-<<<<<<< HEAD
-  data-source="transactions.csv"
-=======
   database-schema="database_schema.json"
->>>>>>> origin/master
   input-modes="english"
   output-mode="sql"
   intent-spec="query_intents.yml"
@@ -95,14 +87,6 @@ For example:
 </pl-intent-console>
 ```
 
-<<<<<<< HEAD
-Both `data-source` and `intent-spec` are resolved inside the question's `serverFilesQuestion` directory. The current draft accepts a CSV data source and SQL output only. Grading executes the student's query and the reference query against the CSV in a restricted, in-memory SQLite database, then compares result rows without requiring a particular SQL spelling.
-
-The element stores the student's English under `<answers-name>-source` and SQL under `<answers-name>-generated-code`. The LLM receives only the CSV schema, instructor intent specification, and student's English—not the reference query or grading result.
-
-The server accepts ordinary English analysis plans without enforcing exact canonical lines or a fixed operation order. Before any model call, it rejects question-like input and recognizable prompt-injection attempts; the assignment question is never included in the model request.
-A failed safety check, provider request, or model-output check preserves the previously generated SQL and does not increment the question's generation count. Model output must be exactly one complete `SELECT` or `WITH` statement; prose, Markdown fences, comments, incomplete SQL, and multiple statements are rejected rather than repaired.
-=======
 `database-schema` and `intent-spec` are filenames relative to `serverFilesQuestion`.
 
 ## Database schema format
@@ -233,4 +217,3 @@ docker compose \
 ```
 
 Set `ENGLISH_TO_SQL_LOG_FILE` on the PrairieLearn service to use another writable path.
->>>>>>> origin/master
