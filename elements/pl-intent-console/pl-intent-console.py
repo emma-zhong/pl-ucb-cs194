@@ -1,6 +1,5 @@
 import csv
 import json
-import logging
 import os
 import re
 import sqlite3
@@ -17,8 +16,10 @@ DEFAULT_ROW_LIMIT = 20
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_RUNS = 10
 MAX_GRADE_ROWS = 10000
-LOGGER = logging.getLogger(__name__)
 LOG_PREFIX = "pl-intent-console"
+LOG_FILE = os.environ.get(
+    "ENGLISH_TO_SQL_LOG_FILE", "/tmp/pl-intent-console.log"
+)
 
 PLAN_ERROR_MESSAGES = {
     "NO_OPERATION": (
@@ -65,20 +66,68 @@ def _new_trace_id():
     return uuid.uuid4().hex[:12]
 
 
-def _log_event(trace_id, event, **fields):
-    """Write one machine-readable event to the PrairieLearn server logs.
+def _log_label(name):
+    return name.replace("_", " ").capitalize()
 
-    Warning level is intentional: Python's default logging configuration filters out
-    lower levels, while these diagnostics need to be visible without changing the
-    PrairieLearn container configuration.
+
+def _append_log_field(lines, prefix, name, value, indentation=2):
+    label = _log_label(name)
+    spacing = " " * indentation
+    if isinstance(value, dict):
+        lines.append(f"{prefix}{spacing}{label}:")
+        for child_name, child_value in value.items():
+            _append_log_field(
+                lines,
+                prefix,
+                child_name,
+                child_value,
+                indentation + 2,
+            )
+        return
+    if isinstance(value, list):
+        rendered = ", ".join(str(item) for item in value) if value else "(none)"
+        lines.append(f"{prefix}{spacing}{label}: {rendered}")
+        return
+    if isinstance(value, bool):
+        value = "yes" if value else "no"
+    rendered_lines = str(value).splitlines() or [""]
+    if len(rendered_lines) == 1:
+        lines.append(f"{prefix}{spacing}{label}: {rendered_lines[0]}")
+        return
+    lines.append(f"{prefix}{spacing}{label}:")
+    lines.extend(
+        f"{prefix}{spacing}  {rendered_line}" for rendered_line in rendered_lines
+    )
+
+
+def _log_event(trace_id, event, **fields):
+    """Write one readable event without touching the parse process console.
+
+    PrairieLearn treats stdout or stderr output during parse() as a course error, so
+    these diagnostics go directly to a dedicated file. Logging must never prevent a
+    student submission from being processed.
     """
-    payload = {
-        "component": LOG_PREFIX,
-        "trace_id": trace_id,
-        "event": event,
-        **fields,
-    }
-    LOGGER.warning("%s %s", LOG_PREFIX, json.dumps(payload, ensure_ascii=False))
+    prefix = f"{LOG_PREFIX} [{trace_id}]"
+    lines = [f"{prefix} {_log_label(event)}"]
+    for name, value in fields.items():
+        _append_log_field(lines, prefix, name, value)
+    message = ("\n".join(lines) + "\n").encode("utf-8")
+    descriptor = None
+    try:
+        descriptor = os.open(
+            LOG_FILE,
+            os.O_APPEND | os.O_CREAT | os.O_WRONLY,
+            0o600,
+        )
+        os.write(descriptor, message)
+    except OSError:
+        pass
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _attributes(element_html):
@@ -823,7 +872,6 @@ def _run_query(data, attrs, sql, limit, trace_id=None, purpose="query"):
 def parse(element_html, data):
     attrs = _attributes(element_html)
     trace_id = _new_trace_id()
-    data.setdefault("_pl_intent_console_trace_ids", {})[attrs["name"]] = trace_id
     source = _answer(data, attrs["source_name"]).strip()
     code = _answer(data, attrs["code_name"]).strip()
     generate = _answer(data, attrs["generate_name"], "1") != "0"
@@ -917,9 +965,7 @@ def _canonical_rows(rows):
 
 def grade(element_html, data):
     attrs = _attributes(element_html)
-    trace_id = data.get("_pl_intent_console_trace_ids", {}).get(attrs["name"])
-    if not trace_id:
-        trace_id = _new_trace_id()
+    trace_id = _new_trace_id()
     _log_event(trace_id, "grading_started", answers_name=attrs["name"])
     if attrs["reference_name"] is None or attrs["name"] in data["format_errors"]:
         _log_event(trace_id, "grading_skipped", reason="not_configured_or_format_error")

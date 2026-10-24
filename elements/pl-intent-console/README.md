@@ -193,15 +193,27 @@ Student and reference queries run against the same restricted, in-memory SQLite 
 
 ## Server-side diagnostics
 
-Every Save and Save & Grade submission emits structured, single-line JSON events to the
-PrairieLearn server logs. Events from one submission share a `trace_id` and include the
-selected action, each student-input screening decision, table-name filtering, the exact
-processed student request sent as the model's user message, the model's text output,
-validated SQL, preview execution, and grading status. Save & Grade is explicitly logged as
-preserving the editor SQL rather than generating again.
+Every Save and Save & Grade submission emits labeled, multi-line events to
+`/tmp/pl-intent-console.log` inside the PrairieLearn container. The element writes directly
+to this file because PrairieLearn treats any stdout or stderr output during `parse()` as a
+course error. A logging failure is ignored so diagnostics can never block a submission.
+
+Each event includes a `trace_id`; the parse events for one button press share one ID, while
+grading uses its own ID. The logs include the selected action, each student-input screening
+decision, table-name filtering, the exact processed student request sent as the model's user
+message, the model's text output, validated SQL, preview execution, and grading status. Save
+& Grade is explicitly logged as preserving the editor SQL rather than generating again.
 
 The log deliberately omits the API key, request authorization header, instructor
 specification text, complete provider response, reference SQL, and reference rows. It does
 contain student-authored text and SQL, so production log access and retention should follow
-the course's student-data policy. Search the container output or PrairieLearn log sink for
-`pl-intent-console`, then filter by `trace_id` to follow one submission.
+the course's student-data policy. Follow the file from the repository root with:
+
+```bash
+docker compose \
+  --env-file .devcontainer/.env \
+  -f .devcontainer/docker-compose.yml \
+  exec prairielearn tail -f /tmp/pl-intent-console.log
+```
+
+Set `ENGLISH_TO_SQL_LOG_FILE` on the PrairieLearn service to use another writable path.

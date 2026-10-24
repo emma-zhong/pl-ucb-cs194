@@ -5,6 +5,7 @@ import re
 import sqlite3
 import urllib.error
 import urllib.request
+import uuid
 
 import chevron
 import lxml.html
@@ -15,6 +16,11 @@ DEFAULT_ROW_LIMIT = 20
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_RUNS = 10
 MAX_GRADE_ROWS = 10000
+LOG_PREFIX = "pl-intent-console-dictionary"
+LOG_FILE = os.environ.get(
+    "ENGLISH_TO_SQL_DICTIONARY_LOG_FILE",
+    "/tmp/pl-intent-console-dictionary.log",
+)
 
 PLAN_ERROR_MESSAGES = {
     "MISSING_TABLE": (
@@ -64,6 +70,82 @@ PLAN_ERROR_MESSAGES = {
         "code-like or shorthand operations are not translated."
     ),
 }
+
+
+def _new_trace_id():
+    return uuid.uuid4().hex[:12]
+
+
+def _log_label(name):
+    return name.replace("_", " ").capitalize()
+
+
+def _append_log_field(lines, prefix, name, value, indentation=2):
+    label = _log_label(name)
+    spacing = " " * indentation
+    if isinstance(value, dict):
+        lines.append(f"{prefix}{spacing}{label}:")
+        for child_name, child_value in value.items():
+            _append_log_field(
+                lines,
+                prefix,
+                child_name,
+                child_value,
+                indentation + 2,
+            )
+        return
+    if isinstance(value, list):
+        if value and all(isinstance(item, dict) for item in value):
+            lines.append(f"{prefix}{spacing}{label}:")
+            for index, item in enumerate(value, start=1):
+                lines.append(f"{prefix}{spacing}  Item {index}:")
+                for child_name, child_value in item.items():
+                    _append_log_field(
+                        lines,
+                        prefix,
+                        child_name,
+                        child_value,
+                        indentation + 4,
+                    )
+            return
+        rendered = ", ".join(str(item) for item in value) if value else "(none)"
+        lines.append(f"{prefix}{spacing}{label}: {rendered}")
+        return
+    if isinstance(value, bool):
+        value = "yes" if value else "no"
+    rendered_lines = str(value).splitlines() or [""]
+    if len(rendered_lines) == 1:
+        lines.append(f"{prefix}{spacing}{label}: {rendered_lines[0]}")
+        return
+    lines.append(f"{prefix}{spacing}{label}:")
+    lines.extend(
+        f"{prefix}{spacing}  {rendered_line}" for rendered_line in rendered_lines
+    )
+
+
+def _log_event(trace_id, event, **fields):
+    """Write readable diagnostics without touching the parse process console."""
+    prefix = f"{LOG_PREFIX} [{trace_id}]"
+    lines = [f"{prefix} {_log_label(event)}"]
+    for name, value in fields.items():
+        _append_log_field(lines, prefix, name, value)
+    message = ("\n".join(lines) + "\n").encode("utf-8")
+    descriptor = None
+    try:
+        descriptor = os.open(
+            LOG_FILE,
+            os.O_APPEND | os.O_CREAT | os.O_WRONLY,
+            0o600,
+        )
+        os.write(descriptor, message)
+    except OSError:
+        pass
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _attributes(element_html):
@@ -393,7 +475,7 @@ def _sql_terminators(text):
     return terminators
 
 
-def _clean_sql(response_text):
+def _clean_sql(response_text, trace_id=None):
     text = response_text.strip()
     if not text:
         raise ValueError("The model returned an empty response instead of SQL.")
@@ -423,6 +505,8 @@ def _clean_sql(response_text):
         raise ValueError("The model returned an incomplete SQL statement.")
     if _sql_terminators(text) != [len(text) - 1]:
         raise ValueError("The model returned more than one SQL statement.")
+    if trace_id:
+        _log_event(trace_id, "sql_model_output_accepted", generated_sql=text)
     return text
 
 
@@ -482,7 +566,7 @@ def _http_error(status):
     )
 
 
-def _call_model(system_prompt, user_prompt):
+def _call_model(system_prompt, user_prompt, trace_id=None, purpose="model"):
     api_key = os.environ.get("ENGLISH_TO_SQL_API_KEY")
     api_url = os.environ.get(
         "ENGLISH_TO_SQL_API_URL", "https://api.openai.com/v1/chat/completions"
@@ -491,6 +575,16 @@ def _call_model(system_prompt, user_prompt):
     if not api_key or not model:
         raise RuntimeError(
             "The server must set ENGLISH_TO_SQL_API_KEY and ENGLISH_TO_SQL_MODEL."
+        )
+
+    if trace_id:
+        _log_event(
+            trace_id,
+            "model_request_prepared",
+            purpose=purpose,
+            model=model,
+            processed_request=json.loads(user_prompt),
+            system_prompt_included=True,
         )
 
     body = json.dumps(
@@ -513,17 +607,46 @@ def _call_model(system_prompt, user_prompt):
         method="POST",
     )
     timeout = _request_timeout()
+    if trace_id:
+        _log_event(
+            trace_id,
+            "model_request_started",
+            purpose=purpose,
+            timeout_seconds=timeout,
+        )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             response_bytes = response.read(2_000_001)
     except urllib.error.HTTPError as exc:
+        if trace_id:
+            _log_event(
+                trace_id,
+                "model_request_failed",
+                purpose=purpose,
+                failure="http",
+                status=exc.code,
+            )
         raise _http_error(exc.code) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
+        if trace_id:
+            _log_event(
+                trace_id,
+                "model_request_failed",
+                purpose=purpose,
+                failure="connection_or_timeout",
+            )
         raise RuntimeError(
             "The SQL generation service could not be reached. Try Save again later; "
             "this attempt was not counted against the generation limit."
         ) from exc
     if len(response_bytes) > 2_000_000:
+        if trace_id:
+            _log_event(
+                trace_id,
+                "model_request_failed",
+                purpose=purpose,
+                failure="response_too_large",
+            )
         raise RuntimeError(
             "The SQL generation service returned an unexpectedly large response. "
             "This attempt was not counted against the generation limit."
@@ -531,11 +654,27 @@ def _call_model(system_prompt, user_prompt):
     try:
         payload = json.loads(response_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if trace_id:
+            _log_event(
+                trace_id,
+                "model_request_failed",
+                purpose=purpose,
+                failure="unreadable_response",
+            )
         raise RuntimeError(
             "The SQL generation service returned an unreadable response. "
             "Try Save again; this attempt was not counted against the generation limit."
         ) from exc
-    return _extract_model_text(payload)
+    model_output = _extract_model_text(payload)
+    if trace_id:
+        _log_event(
+            trace_id,
+            "model_request_completed",
+            purpose=purpose,
+            response_bytes=len(response_bytes),
+            model_output=model_output,
+        )
+    return model_output
 
 
 def _dictionary_entries(dictionary_text):
@@ -582,18 +721,35 @@ def _dictionary_entries(dictionary_text):
     return entries
 
 
-def _screen_student_input(student_source):
+def _screen_student_input(student_source, trace_id=None):
+    if trace_id:
+        _log_event(
+            trace_id,
+            "student_input_screen_started",
+            student_plan=student_source,
+            characters=len(student_source),
+        )
     if len(student_source) > 5000:
+        if trace_id:
+            _log_event(trace_id, "student_input_rejected", check="length")
         raise ValueError("The analysis plan must be 5,000 characters or fewer.")
     text = student_source.strip()
     if not text:
+        if trace_id:
+            _log_event(trace_id, "student_input_rejected", check="nonempty")
         raise ValueError("Enter an English analysis plan before clicking Save.")
+    if trace_id:
+        _log_event(trace_id, "student_input_check_passed", check="length_and_nonempty")
     if "?" in text or re.match(
         r"^(?:how|what|which|who|when|where|why)\b", text, flags=re.IGNORECASE
     ):
+        if trace_id:
+            _log_event(trace_id, "student_input_rejected", check="assignment_question")
         raise ValueError(
             "Write an analysis plan instead of pasting or restating the assignment question."
         )
+    if trace_id:
+        _log_event(trace_id, "student_input_check_passed", check="not_assignment_question")
     code_patterns = (
         r"\bdf\s*=",
         r"\bdf\s*\[",
@@ -601,10 +757,14 @@ def _screen_student_input(student_source):
         r"\b(?:more_than|less_than|equal_to)\s*=",
     )
     if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in code_patterns):
+        if trace_id:
+            _log_event(trace_id, "student_input_rejected", check="programming_shorthand")
         raise ValueError(
             "Write the analysis plan as English data operations, not dataframe code "
             "or programming shorthand."
         )
+    if trace_id:
+        _log_event(trace_id, "student_input_check_passed", check="english_not_code")
     injection_patterns = (
         r"\b(?:ignore|disregard|override|forget)\b.{0,60}\b"
         r"(?:instruction|prompt|rule|message|above|previous|prior|everything)s?\b",
@@ -618,10 +778,14 @@ def _screen_student_input(student_source):
     )
     for pattern in injection_patterns:
         if re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL):
+            if trace_id:
+                _log_event(trace_id, "student_input_rejected", check="prompt_injection")
             raise ValueError(
                 "Describe only the intended data operations; do not include "
                 "instructions to the translator or requests for its prompt."
             )
+    if trace_id:
+        _log_event(trace_id, "student_input_screen_passed")
 
 
 def _dictionary_for_prompt(entries):
@@ -739,8 +903,15 @@ def _named_tables(student_source, tables):
     ]
 
 
-def _table_context(student_source, tables):
+def _table_context(student_source, tables, trace_id=None):
     named_tables = _named_tables(student_source, tables)
+    if trace_id:
+        _log_event(
+            trace_id,
+            "table_filter_result",
+            available_tables=[table["name"] for table in tables],
+            named_tables=named_tables,
+        )
     if len(tables) > 1 and not named_tables:
         available = ", ".join(table["name"] for table in tables)
         raise ValueError(
@@ -757,10 +928,10 @@ def _table_context(student_source, tables):
     return named_tables
 
 
-def _generate_sql(data, attrs, student_source):
-    _screen_student_input(student_source)
+def _generate_sql(data, attrs, student_source, trace_id=None):
+    _screen_student_input(student_source, trace_id)
     tables = _load_database_schema(data, attrs)
-    named_tables = _table_context(student_source, tables)
+    named_tables = _table_context(student_source, tables, trace_id)
     dictionary_text = _read_question_file(data, attrs["dictionary"])
     dictionary_entries = _dictionary_entries(dictionary_text)
     mapping_system_prompt = """ROLE
@@ -798,7 +969,12 @@ any other fields."""
         ensure_ascii=False,
     )
     normalized_plan = _normalize_plan(
-        _call_model(mapping_system_prompt, mapping_user_prompt),
+        _call_model(
+            mapping_system_prompt,
+            mapping_user_prompt,
+            trace_id,
+            "dictionary_mapping",
+        ),
         student_source,
         dictionary_entries,
     )
@@ -808,6 +984,15 @@ any other fields."""
         for replacement in normalized_plan["replacements"]
         if replacement["kind"] == "modifier"
     ]
+    if trace_id:
+        _log_event(
+            trace_id,
+            "dictionary_normalization_completed",
+            canonical_plan=normalized_plan["canonical_plan"],
+            replacements=normalized_plan["replacements"],
+            recognized_operations=recognized_operations,
+            recognized_modifiers=recognized_modifiers,
+        )
 
     intent_spec = _read_question_file(data, attrs["intent_spec"])
     system_prompt = f"""ROLE
@@ -844,7 +1029,15 @@ Return only the SQL statement or PLAN_ERROR reason required by the specification
         },
         ensure_ascii=False,
     )
-    return _clean_sql(_call_model(system_prompt, user_prompt))
+    return _clean_sql(
+        _call_model(
+            system_prompt,
+            user_prompt,
+            trace_id,
+            "sql_generation",
+        ),
+        trace_id,
+    )
 
 
 def _quote_identifier(identifier):
