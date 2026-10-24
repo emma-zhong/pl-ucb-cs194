@@ -219,3 +219,31 @@ The element stores the student's English under `<answers-name>-source` and SQL u
 - A failed local check, provider request, or model-output check preserves the previous SQL and does not increment the generation count.
 
 Student and reference queries run against all configured tables in one restricted, in-memory SQLite database. Only read-only `SELECT` or `WITH` queries are accepted. Grading compares result rows and multiplicity rather than exact SQL text; row order and column labels are ignored.
+
+## Server-side diagnostics
+
+Every Save and Save & Grade submission emits labeled, multi-line events to
+`/tmp/pl-intent-console-dictionary.log` inside the PrairieLearn container. The element
+writes directly to this file because PrairieLearn treats stdout or stderr output during
+`parse()` as a course error. A logging failure is ignored so diagnostics can never block a
+submission.
+
+The log covers input screening, table filtering, both model requests and outputs, the
+dictionary-normalized plan and replacements, recognized operations and modifiers, generated
+SQL, preview execution, and grading. Each event has a `trace_id`; parse events for one button
+press share one ID, while grading uses its own ID.
+
+The log omits API credentials, authorization headers, system prompts, reference SQL, and
+reference rows. It contains student-authored text, dictionary mappings sent to the first
+model pass, normalized plans, and SQL, so production access and retention should follow the
+course's student-data policy. Follow it from the repository root with:
+
+```bash
+docker compose \
+  --env-file .devcontainer/.env \
+  -f .devcontainer/docker-compose.yml \
+  exec prairielearn tail -f /tmp/pl-intent-console-dictionary.log
+```
+
+Set `ENGLISH_TO_SQL_DICTIONARY_LOG_FILE` on the PrairieLearn service to use another writable
+path.

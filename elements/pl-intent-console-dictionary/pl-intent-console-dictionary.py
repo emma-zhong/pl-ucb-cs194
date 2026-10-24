@@ -1077,8 +1077,22 @@ def _database_for_schema(data, attrs):
     return connection
 
 
-def _run_query(data, attrs, sql, limit):
+def _run_query(data, attrs, sql, limit, trace_id=None, purpose="query"):
+    if trace_id:
+        _log_event(
+            trace_id,
+            "sql_execution_started",
+            purpose=purpose,
+            row_limit=limit,
+        )
     if not re.match(r"^\s*(?:SELECT|WITH)\b", sql, flags=re.IGNORECASE):
+        if trace_id:
+            _log_event(
+                trace_id,
+                "sql_execution_rejected",
+                purpose=purpose,
+                check="read_only",
+            )
         raise ValueError("Only SELECT queries are allowed.")
     connection = _database_for_schema(data, attrs)
     if hasattr(connection, "setlimit"):
@@ -1115,8 +1129,24 @@ def _run_query(data, attrs, sql, limit):
         display_rows = [
             ["NULL" if value is None else str(value) for value in row] for row in rows
         ]
+        if trace_id:
+            _log_event(
+                trace_id,
+                "sql_execution_completed",
+                purpose=purpose,
+                columns=columns,
+                returned_rows=len(display_rows),
+                truncated=truncated,
+            )
         return columns, display_rows, truncated
     except sqlite3.Error as exc:
+        if trace_id:
+            _log_event(
+                trace_id,
+                "sql_execution_failed",
+                purpose=purpose,
+                error=str(exc),
+            )
         raise ValueError(f"SQL could not be executed: {exc}") from exc
     finally:
         connection.close()
@@ -1124,6 +1154,7 @@ def _run_query(data, attrs, sql, limit):
 
 def parse(element_html, data):
     attrs = _attributes(element_html)
+    trace_id = _new_trace_id()
     source = _answer(data, attrs["source_name"]).strip()
     code = _answer(data, attrs["code_name"]).strip()
     generate = _answer(data, attrs["generate_name"], "1") != "0"
@@ -1132,27 +1163,61 @@ def parse(element_html, data):
     except ValueError:
         run_count = 0
 
+    action = "save" if generate else "save_and_grade"
+    _log_event(
+        trace_id,
+        "submission_received",
+        action=action,
+        answers_name=attrs["name"],
+        run_count=run_count,
+        max_runs=attrs["max_runs"],
+        student_plan=source,
+        editor_sql=code,
+    )
+
     if generate:
         if not source:
             data["format_errors"][
                 attrs["name"]
             ] = "Enter an English analysis plan before clicking Save."
+            _log_event(trace_id, "generation_skipped", reason="empty_student_plan")
         elif run_count >= attrs["max_runs"]:
             data["format_errors"][
                 attrs["name"]
             ] = f"This question allows at most {attrs['max_runs']} SQL generations."
+            _log_event(trace_id, "generation_skipped", reason="generation_limit")
         else:
             try:
-                code = _generate_sql(data, attrs, source)
+                code = _generate_sql(data, attrs, source, trace_id)
                 run_count += 1
+                _log_event(
+                    trace_id,
+                    "generation_succeeded",
+                    generated_sql=code,
+                    run_count=run_count,
+                )
             except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
                 data["format_errors"][attrs["name"]] = str(exc)
+                _log_event(trace_id, "generation_failed", error=str(exc))
+    else:
+        _log_event(
+            trace_id,
+            "generation_skipped",
+            reason="save_and_grade_preserves_editor_sql",
+        )
 
     columns = []
     rows = []
     if code and attrs["name"] not in data["format_errors"]:
         try:
-            columns, rows, truncated = _run_query(data, attrs, code, attrs["row_limit"])
+            columns, rows, truncated = _run_query(
+                data,
+                attrs,
+                code,
+                attrs["row_limit"],
+                trace_id,
+                "preview",
+            )
             if truncated:
                 rows.append(
                     [f"Preview limited to {attrs['row_limit']} rows."]
@@ -1160,12 +1225,21 @@ def parse(element_html, data):
                 )
         except ValueError as exc:
             data["format_errors"][attrs["name"]] = str(exc)
+            _log_event(trace_id, "preview_failed", error=str(exc))
 
     _write_answer(data, attrs["source_name"], source)
     _write_answer(data, attrs["code_name"], code)
     _write_answer(data, attrs["schema_name"], json.dumps(columns))
     _write_answer(data, attrs["preview_name"], json.dumps(rows))
     _write_answer(data, attrs["runs_name"], str(run_count))
+    _log_event(
+        trace_id,
+        "parse_completed",
+        action=action,
+        run_count=run_count,
+        has_format_error=attrs["name"] in data["format_errors"],
+        preview_rows=len(rows),
+    )
 
 
 def _canonical_rows(rows):
@@ -1174,10 +1248,14 @@ def _canonical_rows(rows):
 
 def grade(element_html, data):
     attrs = _attributes(element_html)
+    trace_id = _new_trace_id()
+    _log_event(trace_id, "grading_started", answers_name=attrs["name"])
     if attrs["reference_name"] is None or attrs["name"] in data["format_errors"]:
+        _log_event(trace_id, "grading_skipped", reason="not_configured_or_format_error")
         return
     reference = data["correct_answers"].get(attrs["reference_name"])
     if reference is None:
+        _log_event(trace_id, "grading_skipped", reason="reference_unavailable")
         return
     code = _answer(data, attrs["code_name"]).strip()
     if not code:
@@ -1186,10 +1264,17 @@ def grade(element_html, data):
             "weight": attrs["weight"],
             "feedback": "No SQL query was submitted.",
         }
+        _log_event(trace_id, "grading_completed", correct=False, reason="empty_sql")
         return
+    _log_event(trace_id, "student_sql_selected_for_grading", student_sql=code)
     try:
         _, student_rows, student_truncated = _run_query(
-            data, attrs, code, MAX_GRADE_ROWS
+            data,
+            attrs,
+            code,
+            MAX_GRADE_ROWS,
+            trace_id,
+            "student_grading",
         )
         _, reference_rows, reference_truncated = _run_query(
             data, attrs, str(pl.from_json(reference)), MAX_GRADE_ROWS
@@ -1206,9 +1291,16 @@ def grade(element_html, data):
                 else "Your SQL ran, but its result did not match the expected result."
             ),
         }
+        _log_event(
+            trace_id,
+            "grading_completed",
+            correct=correct,
+            student_row_count=len(student_rows),
+        )
     except ValueError as exc:
         data["partial_scores"][attrs["name"]] = {
             "score": 0,
             "weight": attrs["weight"],
             "feedback": str(exc),
         }
+        _log_event(trace_id, "grading_failed", error=str(exc))
