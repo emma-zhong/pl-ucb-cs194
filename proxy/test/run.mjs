@@ -2,8 +2,22 @@
 // then shut both down. Uses no real OpenAI key and spends no credits.
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+
+// wrangler quietly moves to another port when 8787 is taken, so the checks would run
+// against whatever already listens there. Refuse to start instead.
+for (const port of [8787, 8788]) {
+	const free = await new Promise((resolve) => {
+		const probe = net.createServer().once("error", () => resolve(false));
+		probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
+	});
+	if (!free) {
+		console.error(`Port ${port} is in use. Stop any other \`wrangler dev\` or test server and try again.`);
+		process.exit(1);
+	}
+}
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-test-"));
 const calls = path.join(dir, "calls.log");

@@ -7,10 +7,10 @@ This is a UC Berkeley CS 194 PrairieLearn course repository. The course is named
 The current development effort is a draft PrairieLearn custom element that acts as an **English-to-SQL console**:
 
 1. A student writes an analysis plan in English.
-2. Clicking PrairieLearn's **Save** button sends the English plan, dataset schema, and instructor-authored generation rules to an external LLM.
+2. Clicking the element's **Generate SQL** button sends the English plan, dataset schema, and instructor-authored generation rules to an LLM through the English-to-SQL proxy (`proxy/`).
 3. The returned SQL appears in an editable code area and a result preview is shown.
-4. A later **Save** intentionally regenerates SQL and overwrites student edits.
-5. **Save & Grade** must preserve and grade the SQL currently visible in the editor rather than regenerating it.
+4. A later **Generate SQL** intentionally regenerates SQL and overwrites student edits.
+5. PrairieLearn's **Save** and **Save & Grade** never generate SQL; **Save & Grade** must preserve and grade the SQL currently visible in the editor.
 
 The external model generates SQL, not Python or pandas code.
 
@@ -20,9 +20,9 @@ The external model generates SQL, not Python or pandas code.
 
 The draft custom element is in `elements/pl-intent-console/`:
 
-- `pl-intent-console.py`: lifecycle, LLM request, CSV-to-SQLite loading, preview, and result-based grading.
+- `pl-intent-console.py`: lifecycle, proxy jobs, CSV-to-SQLite loading, preview, and result-based grading.
 - `pl-intent-console.mustache`: question, submission, and answer panel markup.
-- `pl-intent-console.js`: distinguishes Save from Save & Grade using the submitting button.
+- `pl-intent-console.js`: the Generate SQL button; saves with a `generate` action, then polls with `poll` saves until the SQL arrives.
 - `pl-intent-console.css`: console and preview styling.
 - `info.json`: PrairieLearn element registration and browser dependencies.
 - `README.md`: authoring and server configuration instructions.
@@ -33,7 +33,9 @@ The element is intentionally a draft. Its currently supported contract is:
 - `output-mode="sql"`
 - CSV files in the question's `serverFilesQuestion` directory
 - an instructor-authored intent specification stored in `serverFilesQuestion`
-- an OpenAI-compatible chat-completions endpoint
+- SQL generation through the English-to-SQL proxy in `proxy/`
+
+The variants `pl-intent-console-dictionary`, `pl-intent-console-two-pass`, and `pl-intent-console-regen` share the same proxy code. Two-call variants send their first call with `counts: false` so only the final call uses a generation.
 
 The LLM receives only:
 
@@ -74,18 +76,17 @@ The two YAML prompt files may contain user-owned, uncommitted changes. Preserve 
 
 Never commit an API key or expose it in HTML, JavaScript, question parameters, element attributes, submitted answers, logs, or feedback.
 
-The element reads these server-side environment variables:
+The OpenAI key lives only in the proxy (`proxy/.dev.vars` locally, `wrangler secret put` when deployed). The elements read these server-side settings:
 
 ```text
-ENGLISH_TO_SQL_API_KEY=...
-ENGLISH_TO_SQL_MODEL=...
-ENGLISH_TO_SQL_API_URL=https://api.openai.com/v1/chat/completions
-ENGLISH_TO_SQL_TIMEOUT_SECONDS=20
+ENGLISH_TO_SQL_PROXY_URL=http://host.docker.internal:8787
+ENGLISH_TO_SQL_PROXY_TOKEN=...   # the proxy's COURSE_TOKEN
+ENGLISH_TO_SQL_MODEL=gpt-4.1-mini
 ```
 
-The URL and timeout are optional. The model and API key are required. The PrairieLearn host/container must permit outbound HTTPS to the configured endpoint.
+The URL and model are optional. Hosted PrairieLearn passes no environment variables to question code, so a deployed question reads the same settings from `serverFilesQuestion/llm_config.json` (`proxy_url`, `token`, `model`). The course token only works against the proxy, which enforces its own limits.
 
-The Docker Compose configuration passes these variables into the PrairieLearn container. Local developers should copy `.devcontainer/.env.example` to the Git-ignored `.devcontainer/.env`, add their own key there, and start Compose with `--env-file .devcontainer/.env`. Never write secret values into committed files.
+The Docker Compose configuration passes these variables into the PrairieLearn container. Local developers should copy `.devcontainer/.env.example` to the Git-ignored `.devcontainer/.env`, set the course token there, and start Compose with `--env-file .devcontainer/.env`. Never write secret values into committed files.
 
 ## Safety and grading behavior
 
@@ -96,21 +97,27 @@ Maintain these protections when changing the element:
 - Only `SELECT` or `WITH` queries are accepted.
 - SQLite authorizer callbacks deny writes and other non-read operations.
 - SQLite length, SQL length, column, instruction, and result-row limits constrain execution.
-- The LLM call happens on the PrairieLearn server; browser code must never call the provider directly.
+- The LLM call goes from the PrairieLearn server to the proxy; browser code must never call the proxy or the provider directly.
+- Generation state (job key, sequence number, pending flag) lives in the variant's `params`, never in form fields the student can edit; the proxy counts generations.
 - Student and reference SQL are graded by comparing result rows, not exact SQL text.
 - Row order and column names are currently ignored by grading; row values and multiplicity matter.
 - The result preview is limited independently from grading.
 
-The Save/Save & Grade distinction is implemented by `pl-intent-console.js`, which writes a hidden form value before submission. If changing markup or PrairieLearn integration, verify both paths:
+Generation is triggered only by the `<answers-name>-action` value (`generate` or `poll`) that `pl-intent-console.js` adds to its own saves. `parse()` waits up to `PROXY_WAIT_SECONDS` (5 s) for a quick result, well under PrairieLearn's limit on question code, then leaves the job pending for the browser to poll. If changing markup or PrairieLearn integration, verify all paths:
 
-- Save: regenerate SQL, overwrite old SQL, increment generation count, and preview.
+- Generate SQL: start a proxy job, replace the SQL, use one generation, and preview; a slow job returns pending and finishes on a later poll.
+- Save: keep edited SQL and preview it.
 - Save & Grade: keep edited SQL, preview it, and grade it.
+
+The STAR copies in `pl-ucb-star-assessments` are generated from these elements by `scripts/build_star_questions.py`; rerun it after changing an element instead of editing the copies.
 
 ## Local PrairieLearn workflow
 
 Run these commands from the repository root.
 
-Create a private local environment file, then start PrairieLearn in the foreground:
+Start the proxy first (see `proxy/README.md`): in `proxy/`, create `.dev.vars` from `.dev.vars.example`, then run `npx wrangler dev`. `npm test` there checks the proxy against a fake OpenAI without spending credits.
+
+Create a private local environment file with the same course token, then start PrairieLearn in the foreground:
 
 ```bash
 cp .devcontainer/.env.example .devcontainer/.env
@@ -147,7 +154,7 @@ python3 -m json.tool questions/english-to-sql-transactions/info.json >/dev/null
 git diff --check
 ```
 
-Also validate the question in a running PrairieLearn instance when Docker is available. Test both Save and Save & Grade with a mocked or configured LLM endpoint. Do not make a real paid LLM request without the user's configured credentials and intent.
+Also validate the question in a running PrairieLearn instance when Docker is available. Test Generate SQL (including a slow generation that finishes by polling), Save, and Save & Grade against a proxy pointed at a fake or configured LLM. Do not make a real paid LLM request without the user's configured credentials and intent.
 
 ## Repository hygiene
 

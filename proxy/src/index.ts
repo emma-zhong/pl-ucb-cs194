@@ -3,9 +3,11 @@ import { DurableObject } from "cloudflare:workers";
 // English-to-SQL proxy: holds the OpenAI key, enforces generation limits, and runs
 // each model call in the background so PrairieLearn never waits on OpenAI.
 //
-//   POST /v1/jobs/<variant_key>  {seq, user, model, messages}  start a generation
-//   GET  /v1/jobs/<variant_key>                                 check its status
+//   POST /v1/jobs/<variant_key>  {seq, user, model, messages, counts?, limit?}  start a call
+//   GET  /v1/jobs/<variant_key>                                                 check its status
 //
+// `counts: false` marks an intermediate call (e.g. the first of two passes) that does not
+// use up a generation. `limit` lowers the per-variant generation limit for this question.
 // Every request needs "Authorization: Bearer <COURSE_TOKEN>".
 
 const DEFAULT_OPENAI_URL = "https://api.openai.com/v1/chat/completions";
@@ -26,6 +28,8 @@ interface NewJob {
 	user: string;
 	model: string;
 	messages: Message[];
+	counts?: boolean;
+	limit?: number;
 }
 
 interface JobState {
@@ -35,6 +39,8 @@ interface JobState {
 	user: string;
 	model: string;
 	day: string;
+	counts: boolean;
+	limit: number;
 	messages?: Message[];
 	text?: string;
 	error?: string;
@@ -81,6 +87,8 @@ function validate(body: unknown): string | null {
 	if (!Number.isInteger(job.seq) || (job.seq as number) <= 0) return "seq must be a positive integer.";
 	if (typeof job.user !== "string" || !job.user || job.user.length > 200) return "user must be a nonempty string.";
 	if (typeof job.model !== "string" || !job.model || job.model.length > 100) return "model must be a nonempty string.";
+	if (job.counts !== undefined && typeof job.counts !== "boolean") return "counts must be true or false.";
+	if (job.limit !== undefined && (!Number.isInteger(job.limit) || job.limit <= 0)) return "limit must be a positive integer.";
 	if (!Array.isArray(job.messages) || job.messages.length === 0 || job.messages.length > 10) {
 		return "messages must be a list of 1 to 10 messages.";
 	}
@@ -94,16 +102,21 @@ function validate(body: unknown): string | null {
 	return total > MAX_PROMPT_CHARS ? "messages are too long." : null;
 }
 
-function publicView(job: JobState, env: Env): Record<string, unknown> {
-	// Never return the prompt.
+// The per-variant generation limit: the question's own limit, capped by the proxy's.
+function generationLimit(env: Env, requested?: number): number {
 	const max = limit(env.MAX_GENERATIONS_PER_VARIANT, 10);
+	return requested === undefined ? max : Math.min(requested, max);
+}
+
+function publicView(job: JobState): Record<string, unknown> {
+	// Never return the prompt.
 	return {
 		status: job.status,
 		seq: job.seq,
 		...(job.text !== undefined && { text: job.text }),
 		...(job.error !== undefined && { error: job.error }),
 		generations_used: job.successes,
-		generations_left: Math.max(0, max - job.successes),
+		generations_left: Math.max(0, job.limit - job.successes),
 	};
 }
 
@@ -141,7 +154,7 @@ export default {
 export class Job extends DurableObject<Env> {
 	async start(key: string, input: NewJob): Promise<Reply> {
 		const job = await this.load();
-		const view = job ? publicView(job, this.env) : {};
+		const view = job ? publicView(job) : {};
 
 		// PrairieLearn and browsers retry; a repeated seq returns the stored job.
 		if (job && input.seq === job.seq) return { status: 200, body: view };
@@ -149,7 +162,8 @@ export class Job extends DurableObject<Env> {
 		if (job?.status === "pending") return { status: 409, body: { ...view, error: "busy" } };
 
 		const successes = job?.successes ?? 0;
-		if (successes >= limit(this.env.MAX_GENERATIONS_PER_VARIANT, 10)) {
+		const jobLimit = generationLimit(this.env, input.limit);
+		if (successes >= jobLimit) {
 			return { status: 429, body: { ...view, error: "generation_limit" } };
 		}
 		if (!list(this.env.ALLOWED_MODELS).includes(input.model)) {
@@ -165,22 +179,24 @@ export class Job extends DurableObject<Env> {
 			user: input.user,
 			model: input.model,
 			day: reserved.day,
+			counts: input.counts ?? true,
+			limit: jobLimit,
 			messages: input.messages,
 			successes,
 			started: Date.now(),
 		};
 		await this.ctx.storage.put("job", next);
 		await this.ctx.storage.setAlarm(Date.now()); // run the OpenAI call in the background
-		return { status: 202, body: publicView(next, this.env) };
+		return { status: 202, body: publicView(next) };
 	}
 
 	async check(): Promise<Reply> {
 		const job = await this.load();
 		if (!job) {
-			const max = limit(this.env.MAX_GENERATIONS_PER_VARIANT, 10);
+			const max = generationLimit(this.env);
 			return { status: 200, body: { status: "none", seq: 0, generations_used: 0, generations_left: max } };
 		}
-		return { status: 200, body: publicView(job, this.env) };
+		return { status: 200, body: publicView(job) };
 	}
 
 	async alarm(): Promise<void> {
@@ -196,7 +212,7 @@ export class Job extends DurableObject<Env> {
 			status: result.error ? "error" : "done",
 			text: result.text,
 			error: result.error,
-			successes: latest.successes + (result.error ? 0 : 1),
+			successes: latest.successes + (result.error || !latest.counts ? 0 : 1),
 			messages: undefined, // don't keep prompts longer than needed
 		});
 	}

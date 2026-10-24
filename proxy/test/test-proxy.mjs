@@ -69,5 +69,20 @@ check("failed calls refunded to daily budget", accepted === 6, `accepted=${accep
 [s, b] = await post(key("ok7"), job(1, "fine", { user }));
 check("7th in a day -> 429 user_daily_limit", s === 429 && b.error === "user_daily_limit", `${s} ${JSON.stringify(b)}`);
 
+// Two-pass elements mark their first call counts:false, and questions can lower the limit.
+const C = key("variantC");
+await post(C, job(1, "first pass", { counts: false, limit: 2, user: `carl-${run}` })); b = await settle(C);
+check("counts:false call does not use a generation", b?.status === "done" && b.generations_used === 0 && b.generations_left === 2, JSON.stringify(b));
+await post(C, job(2, "second pass", { limit: 2, user: `carl-${run}` })); b = await settle(C);
+check("question limit of 2 -> 1 left after one generation", b?.generations_used === 1 && b.generations_left === 1, JSON.stringify(b));
+await post(C, job(3, "again", { limit: 2, user: `carl-${run}` })); await settle(C);
+[s, b] = await post(C, job(4, "over", { limit: 2, user: `carl-${run}` }));
+check("question limit of 2 enforced", s === 429 && b.error === "generation_limit", `${s} ${JSON.stringify(b)}`);
+[s, b] = await post(key("variantD"), job(1, "x", { limit: 50, user: `erin-${run}` })); await settle(key("variantD"));
+const [, d] = await get(key("variantD"));
+check("question limit cannot exceed proxy limit (3)", d.generations_left === 2, JSON.stringify(d));
+[s] = await post(key("variantE"), job(1, "x", { counts: "no" }));
+check("bad counts -> 400", s === 400);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

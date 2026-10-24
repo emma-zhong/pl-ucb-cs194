@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -13,9 +14,42 @@ import prairielearn as pl
 
 TEMPLATE_FILE = "pl-intent-console-dictionary.mustache"
 DEFAULT_ROW_LIMIT = 20
-DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_RUNS = 10
 MAX_GRADE_ROWS = 10000
+# Model calls per generation: one maps the plan's wording to the dictionary, one
+# turns the normalized plan into SQL.
+STAGE_COUNT = 2
+# SQL generation goes through the course's English-to-SQL proxy (see proxy/README.md),
+# which holds the OpenAI key and enforces the generation limits.
+DEFAULT_MODEL = "gpt-4.1-mini"
+PROXY_REQUEST_TIMEOUT_SECONDS = 5
+# parse() waits this long for a quick generation before the browser takes over polling.
+# Keep it well under PrairieLearn's limit on question code (about 10 seconds).
+PROXY_WAIT_SECONDS = 5
+PROXY_POLL_WAIT_SECONDS = 2
+PROXY_CHECK_INTERVAL_SECONDS = 0.5
+STAFF_PROBLEM = "SQL generation is unavailable right now. Tell the course staff."
+PROXY_ERROR_MESSAGES = {
+    "generation_limit": "You have used all of the SQL generations for this question.",
+    "user_daily_limit": "You have reached today's SQL generation limit. Try again tomorrow.",
+    "course_daily_limit": (
+        "The course has reached today's SQL generation limit. Try again tomorrow."
+    ),
+    "busy": "SQL is already being generated. Wait for it to finish.",
+    "provider_rate_limit": (
+        "The SQL generation service is busy. Wait a minute, then click Generate SQL again."
+    ),
+    "provider_unavailable": (
+        "The SQL generation service is temporarily unavailable. Click Generate SQL again."
+    ),
+    "timeout": "SQL generation took too long. Click Generate SQL again.",
+    "provider_quota": STAFF_PROBLEM,
+    "provider_auth": STAFF_PROBLEM,
+    "provider_rejected": STAFF_PROBLEM,
+    "unauthorized": STAFF_PROBLEM,
+    "model_not_allowed": STAFF_PROBLEM,
+    "bad_request": STAFF_PROBLEM,
+}
 LOG_PREFIX = "pl-intent-console-dictionary"
 LOG_FILE = os.environ.get(
     "ENGLISH_TO_SQL_DICTIONARY_LOG_FILE",
@@ -158,8 +192,8 @@ def _attributes(element_html):
         "code_name": f"{name}-generated-code",
         "schema_name": f"{name}-result-schema",
         "preview_name": f"{name}-result-preview",
-        "runs_name": f"{name}-run-count",
-        "generate_name": f"{name}-generate-on-submit",
+        "action_name": f"{name}-action",
+        "job_name": f"{name}-job",
         "data_source": pl.get_string_attrib(element, "data-source", None),
         "database_schema": pl.get_string_attrib(
             element, "database-schema", None
@@ -259,21 +293,25 @@ def render(element_html, data):
     code = _answer(data, attrs["code_name"])
     columns, rows = _load_preview(data, attrs)
     parse_error = data["format_errors"].get(attrs["name"])
+    editable = data.get("editable", True)
+    pending = bool(data["params"].get(attrs["job_name"], {}).get("pending"))
+    generations_left = _generations_left(data, attrs)
 
     params = {
         "name": attrs["name"],
         "source_name": attrs["source_name"],
         "code_name": attrs["code_name"],
-        "runs_name": attrs["runs_name"],
-        "generate_name": attrs["generate_name"],
+        "action_name": attrs["action_name"],
         "source": source,
         "code": code,
-        "run_count": _answer(data, attrs["runs_name"], "0"),
         "input_label": attrs["input_label"],
         "code_label": attrs["code_label"],
         "parse_error": parse_error,
-        "input_editable": data.get("editable", True),
-        "code_editable": data.get("editable", True) and attrs["editable"],
+        "input_editable": editable,
+        "code_editable": editable and attrs["editable"],
+        "pending": pending,
+        "can_generate": editable and not pending and generations_left > 0,
+        "generations_left": generations_left,
         **_preview_params(columns, rows),
     }
 
@@ -508,173 +546,6 @@ def _clean_sql(response_text, trace_id=None):
     if trace_id:
         _log_event(trace_id, "sql_model_output_accepted", generated_sql=text)
     return text
-
-
-def _extract_model_text(payload):
-    if not isinstance(payload, dict):
-        raise ValueError("The LLM response body was not a JSON object.")
-    if isinstance(payload.get("output_text"), str):
-        return payload["output_text"]
-    choices = payload.get("choices") or []
-    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-        message = choices[0].get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, str):
-            return content
-    outputs = payload.get("output") or []
-    if isinstance(outputs, list):
-        for output in outputs:
-            if not isinstance(output, dict):
-                continue
-            contents = output.get("content") or []
-            if not isinstance(contents, list):
-                continue
-            for content in contents:
-                if isinstance(content, dict) and isinstance(content.get("text"), str):
-                    return content["text"]
-    raise ValueError("The LLM response did not contain generated text.")
-
-
-def _request_timeout():
-    raw_value = os.environ.get(
-        "ENGLISH_TO_SQL_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS)
-    )
-    try:
-        timeout = int(raw_value)
-    except ValueError as exc:
-        raise RuntimeError(
-            "ENGLISH_TO_SQL_TIMEOUT_SECONDS must be a positive integer."
-        ) from exc
-    if timeout <= 0:
-        raise RuntimeError("ENGLISH_TO_SQL_TIMEOUT_SECONDS must be a positive integer.")
-    return timeout
-
-
-def _http_error(status):
-    if status in {408, 429, 500, 502, 503, 504}:
-        return RuntimeError(
-            "The SQL generation service is temporarily unavailable. "
-            "Try Save again later; this attempt was not counted against the "
-            "generation limit."
-        )
-    if status in {401, 403}:
-        return RuntimeError(
-            "The SQL generation service could not authenticate. Contact the course staff."
-        )
-    return RuntimeError(
-        f"The SQL generation service request failed with HTTP {status}."
-    )
-
-
-def _call_model(system_prompt, user_prompt, trace_id=None, purpose="model"):
-    api_key = os.environ.get("ENGLISH_TO_SQL_API_KEY")
-    api_url = os.environ.get(
-        "ENGLISH_TO_SQL_API_URL", "https://api.openai.com/v1/chat/completions"
-    )
-    model = os.environ.get("ENGLISH_TO_SQL_MODEL")
-    if not api_key or not model:
-        raise RuntimeError(
-            "The server must set ENGLISH_TO_SQL_API_KEY and ENGLISH_TO_SQL_MODEL."
-        )
-
-    if trace_id:
-        _log_event(
-            trace_id,
-            "model_request_prepared",
-            purpose=purpose,
-            model=model,
-            processed_request=json.loads(user_prompt),
-            system_prompt_included=True,
-        )
-
-    body = json.dumps(
-        {
-            "model": model,
-            "temperature": 0,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        api_url,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    timeout = _request_timeout()
-    if trace_id:
-        _log_event(
-            trace_id,
-            "model_request_started",
-            purpose=purpose,
-            timeout_seconds=timeout,
-        )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            response_bytes = response.read(2_000_001)
-    except urllib.error.HTTPError as exc:
-        if trace_id:
-            _log_event(
-                trace_id,
-                "model_request_failed",
-                purpose=purpose,
-                failure="http",
-                status=exc.code,
-            )
-        raise _http_error(exc.code) from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        if trace_id:
-            _log_event(
-                trace_id,
-                "model_request_failed",
-                purpose=purpose,
-                failure="connection_or_timeout",
-            )
-        raise RuntimeError(
-            "The SQL generation service could not be reached. Try Save again later; "
-            "this attempt was not counted against the generation limit."
-        ) from exc
-    if len(response_bytes) > 2_000_000:
-        if trace_id:
-            _log_event(
-                trace_id,
-                "model_request_failed",
-                purpose=purpose,
-                failure="response_too_large",
-            )
-        raise RuntimeError(
-            "The SQL generation service returned an unexpectedly large response. "
-            "This attempt was not counted against the generation limit."
-        )
-    try:
-        payload = json.loads(response_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        if trace_id:
-            _log_event(
-                trace_id,
-                "model_request_failed",
-                purpose=purpose,
-                failure="unreadable_response",
-            )
-        raise RuntimeError(
-            "The SQL generation service returned an unreadable response. "
-            "Try Save again; this attempt was not counted against the generation limit."
-        ) from exc
-    model_output = _extract_model_text(payload)
-    if trace_id:
-        _log_event(
-            trace_id,
-            "model_request_completed",
-            purpose=purpose,
-            response_bytes=len(response_bytes),
-            model_output=model_output,
-        )
-    return model_output
 
 
 def _dictionary_entries(dictionary_text):
@@ -928,10 +799,26 @@ def _table_context(student_source, tables, trace_id=None):
     return named_tables
 
 
-def _generate_sql(data, attrs, student_source, trace_id=None):
+def _messages(system_prompt, user_prompt, trace_id, purpose):
+    if trace_id:
+        _log_event(
+            trace_id,
+            "model_request_prepared",
+            purpose=purpose,
+            processed_request=json.loads(user_prompt),
+            system_prompt_included=True,
+        )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def _first_stage_messages(data, attrs, student_source, trace_id=None):
+    """Stage 1: map the plan's wording to the instructor's canonical dictionary."""
     _screen_student_input(student_source, trace_id)
     tables = _load_database_schema(data, attrs)
-    named_tables = _table_context(student_source, tables, trace_id)
+    _table_context(student_source, tables, trace_id)
     dictionary_text = _read_question_file(data, attrs["dictionary"])
     dictionary_entries = _dictionary_entries(dictionary_text)
     mapping_system_prompt = """ROLE
@@ -968,16 +855,19 @@ any other fields."""
         },
         ensure_ascii=False,
     )
-    normalized_plan = _normalize_plan(
-        _call_model(
-            mapping_system_prompt,
-            mapping_user_prompt,
-            trace_id,
-            "dictionary_mapping",
-        ),
-        student_source,
-        dictionary_entries,
+    return _messages(
+        mapping_system_prompt, mapping_user_prompt, trace_id, "dictionary_mapping"
     )
+
+
+def _sql_stage_messages(data, attrs, student_source, mapping_output, trace_id=None):
+    """Stage 2: translate the dictionary-normalized plan to SQL."""
+    tables = _load_database_schema(data, attrs)
+    named_tables = _table_context(student_source, tables)
+    dictionary_entries = _dictionary_entries(
+        _read_question_file(data, attrs["dictionary"])
+    )
+    normalized_plan = _normalize_plan(mapping_output, student_source, dictionary_entries)
     recognized_operations = _validate_normalized_plan(normalized_plan)
     recognized_modifiers = [
         replacement["canonical"]
@@ -1029,15 +919,224 @@ Return only the SQL statement or PLAN_ERROR reason required by the specification
         },
         ensure_ascii=False,
     )
-    return _clean_sql(
-        _call_model(
-            system_prompt,
-            user_prompt,
+    return _messages(system_prompt, user_prompt, trace_id, "sql_generation")
+
+
+def _finish_stage(data, attrs, student_source, stage, text, trace_id=None):
+    """Handle a finished model call: (next stage's messages, None) or (None, SQL)."""
+    if trace_id:
+        _log_event(
             trace_id,
-            "sql_generation",
-        ),
-        trace_id,
+            "model_request_completed",
+            purpose="dictionary_mapping" if stage == 1 else "sql_generation",
+            model_output=text,
+        )
+    if stage == 1:
+        return _sql_stage_messages(data, attrs, student_source, text, trace_id), None
+    return None, _clean_sql(text, trace_id)
+
+
+def _proxy_settings(data):
+    """Return the proxy URL, course token, and model.
+
+    Environment variables (local development) take precedence over the question's
+    optional serverFilesQuestion/llm_config.json, which hosted PrairieLearn needs
+    because it passes no environment variables to question code.
+    """
+    config = {}
+    try:
+        config = json.loads(_read_question_file(data, "llm_config.json"))
+    except FileNotFoundError:
+        pass
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("llm_config.json must contain valid JSON.") from exc
+    if not isinstance(config, dict):
+        raise RuntimeError("llm_config.json must contain a JSON object.")
+    url = os.environ.get("ENGLISH_TO_SQL_PROXY_URL") or config.get("proxy_url")
+    token = os.environ.get("ENGLISH_TO_SQL_PROXY_TOKEN") or config.get("token")
+    model = (
+        os.environ.get("ENGLISH_TO_SQL_MODEL") or config.get("model") or DEFAULT_MODEL
     )
+    if not url or not token:
+        raise RuntimeError("SQL generation is not configured. Tell the course staff.")
+    return str(url).rstrip("/"), str(token), str(model)
+
+
+def _proxy_call(data, job, method, body=None):
+    url, token, _model = _proxy_settings(data)
+    request = urllib.request.Request(
+        f"{url}/v1/jobs/{job['key']}",
+        data=None if body is None else json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=PROXY_REQUEST_TIMEOUT_SECONDS
+        ) as response:
+            return response.status, json.loads(response.read(1_000_000))
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read(100_000))
+        except (OSError, ValueError):
+            return exc.code, {}
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            "The SQL generation service could not be reached. "
+            "Click Generate SQL again."
+        ) from exc
+
+
+def _proxy_error(code):
+    return RuntimeError(
+        PROXY_ERROR_MESSAGES.get(code, "SQL generation failed. Click Generate SQL again.")
+    )
+
+
+def _job_state(data, attrs):
+    """Generation state for this console.
+
+    It lives in params, which PrairieLearn keeps on the server, so students cannot
+    reset it. The proxy is the source of truth for the generation count.
+    """
+    job = data["params"].setdefault(attrs["job_name"], {})
+    job.setdefault("key", uuid.uuid4().hex)
+    job.setdefault("seq", 0)
+    job.setdefault("pending", False)
+    return job
+
+
+def _generations_left(data, attrs):
+    left = data["params"].get(attrs["job_name"], {}).get("left")
+    return left if isinstance(left, int) else attrs["max_runs"]
+
+
+def _proxy_user(data, job):
+    # options.user is only present when the course enables questions_receive_user_data;
+    # without it, the per-student daily cap falls back to this variant.
+    user = data["options"].get("user") or {}
+    return str(user.get("uid") or user.get("user_id") or f"variant-{job['key']}")
+
+
+def _start_job(data, attrs, job, messages, trace_id):
+    _url, _token, model = _proxy_settings(data)
+    body = {
+        "user": _proxy_user(data, job),
+        "model": model,
+        "messages": messages,
+        # Only the final stage uses up one of the student's generations.
+        "counts": job["stage"] == STAGE_COUNT,
+        "limit": attrs["max_runs"],
+    }
+    for _attempt in range(2):
+        body["seq"] = job["seq"] + 1
+        status, reply = _proxy_call(data, job, "POST", body)
+        if status == 409 and reply.get("error") == "stale_seq":
+            # The proxy has a newer job than params recorded; catch up and retry once.
+            job["seq"] = int(reply.get("seq") or job["seq"])
+            continue
+        break
+    _log_event(
+        trace_id,
+        "proxy_job_started",
+        stage=job["stage"],
+        seq=body["seq"],
+        model=model,
+        http_status=status,
+        error=reply.get("error", "none"),
+    )
+    if status not in (200, 202):
+        raise _proxy_error(reply.get("error"))
+    job["seq"] = body["seq"]
+    job["pending"] = True
+    if isinstance(reply.get("generations_left"), int):
+        job["left"] = reply["generations_left"]
+
+
+def _advance_job(data, attrs, job, trace_id, wait_seconds):
+    """Check the job, starting the next stage whenever one finishes.
+
+    Returns the final SQL, or None if a stage is still running after wait_seconds.
+    """
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        status, reply = _proxy_call(data, job, "GET")
+        if status != 200 or reply.get("seq") != job["seq"]:
+            raise _proxy_error(reply.get("error"))
+        if isinstance(reply.get("generations_left"), int):
+            job["left"] = reply["generations_left"]
+        state = reply.get("status")
+        if state == "error":
+            _log_event(
+                trace_id,
+                "proxy_job_failed",
+                stage=job["stage"],
+                error=reply.get("error"),
+            )
+            raise _proxy_error(reply.get("error"))
+        if state == "done":
+            _log_event(
+                trace_id,
+                "proxy_job_finished",
+                stage=job["stage"],
+                generations_left=job.get("left"),
+            )
+            next_messages, sql = _finish_stage(
+                data, attrs, job["source"], job["stage"], reply.get("text") or "", trace_id
+            )
+            if sql is not None:
+                job["pending"] = False
+                return sql
+            job["stage"] += 1
+            _start_job(data, attrs, job, next_messages, trace_id)
+            continue
+        if time.monotonic() >= deadline:
+            _log_event(trace_id, "proxy_job_still_running", stage=job["stage"])
+            return None
+        time.sleep(PROXY_CHECK_INTERVAL_SECONDS)
+
+
+def _generate(data, attrs, job, source, trace_id):
+    """Start a generation from the student's plan; returns SQL if it finishes quickly."""
+    if job["pending"]:
+        raise RuntimeError("SQL is already being generated. Wait for it to finish.")
+    if not source:
+        raise ValueError("Enter an English analysis plan before clicking Generate SQL.")
+    messages = _first_stage_messages(data, attrs, source, trace_id)
+    job["source"] = source
+    job["stage"] = 1
+    _start_job(data, attrs, job, messages, trace_id)
+    return _advance_job(data, attrs, job, trace_id, PROXY_WAIT_SECONDS)
+
+
+def _run_generation(data, attrs, job, action, source, trace_id):
+    """Handle Generate SQL and polling; returns new SQL or None.
+
+    `action` is "generate" or "poll", written by the element's JavaScript. PrairieLearn's
+    own Save and Save & Grade send no action and never call the model.
+    """
+    try:
+        sql = None
+        if action == "generate":
+            sql = _generate(data, attrs, job, source, trace_id)
+        elif action == "poll" and job["pending"]:
+            sql = _advance_job(data, attrs, job, trace_id, PROXY_POLL_WAIT_SECONDS)
+        if sql is not None:
+            _log_event(
+                trace_id,
+                "generation_succeeded",
+                generated_sql=sql,
+                generations_left=job.get("left"),
+            )
+        return sql
+    except (RuntimeError, ValueError) as exc:
+        job["pending"] = False
+        data["format_errors"][attrs["name"]] = str(exc)
+        _log_event(trace_id, "generation_failed", error=str(exc))
+        return None
 
 
 def _quote_identifier(identifier):
@@ -1157,54 +1256,22 @@ def parse(element_html, data):
     trace_id = _new_trace_id()
     source = _answer(data, attrs["source_name"]).strip()
     code = _answer(data, attrs["code_name"]).strip()
-    generate = _answer(data, attrs["generate_name"], "1") != "0"
-    try:
-        run_count = int(_answer(data, attrs["runs_name"], "0"))
-    except ValueError:
-        run_count = 0
-
-    action = "save" if generate else "save_and_grade"
+    action = _answer(data, attrs["action_name"]).strip().lower()
+    job = _job_state(data, attrs)
     _log_event(
         trace_id,
         "submission_received",
-        action=action,
+        action=action or "save",
         answers_name=attrs["name"],
-        run_count=run_count,
-        max_runs=attrs["max_runs"],
+        generation_pending=job["pending"],
         student_plan=source,
         editor_sql=code,
     )
 
-    if generate:
-        if not source:
-            data["format_errors"][
-                attrs["name"]
-            ] = "Enter an English analysis plan before clicking Save."
-            _log_event(trace_id, "generation_skipped", reason="empty_student_plan")
-        elif run_count >= attrs["max_runs"]:
-            data["format_errors"][
-                attrs["name"]
-            ] = f"This question allows at most {attrs['max_runs']} SQL generations."
-            _log_event(trace_id, "generation_skipped", reason="generation_limit")
-        else:
-            try:
-                code = _generate_sql(data, attrs, source, trace_id)
-                run_count += 1
-                _log_event(
-                    trace_id,
-                    "generation_succeeded",
-                    generated_sql=code,
-                    run_count=run_count,
-                )
-            except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
-                data["format_errors"][attrs["name"]] = str(exc)
-                _log_event(trace_id, "generation_failed", error=str(exc))
-    else:
-        _log_event(
-            trace_id,
-            "generation_skipped",
-            reason="save_and_grade_preserves_editor_sql",
-        )
+    # Generate SQL replaces the editor's SQL; Save and Save & Grade keep it.
+    sql = _run_generation(data, attrs, job, action, source, trace_id)
+    if sql is not None:
+        code = sql
 
     columns = []
     rows = []
@@ -1231,12 +1298,11 @@ def parse(element_html, data):
     _write_answer(data, attrs["code_name"], code)
     _write_answer(data, attrs["schema_name"], json.dumps(columns))
     _write_answer(data, attrs["preview_name"], json.dumps(rows))
-    _write_answer(data, attrs["runs_name"], str(run_count))
     _log_event(
         trace_id,
         "parse_completed",
-        action=action,
-        run_count=run_count,
+        action=action or "save",
+        generation_pending=job["pending"],
         has_format_error=attrs["name"] in data["format_errors"],
         preview_rows=len(rows),
     )

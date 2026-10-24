@@ -10,10 +10,13 @@ Every request needs `Authorization: Bearer <COURSE_TOKEN>`.
 
 | Call | Body | Response |
 |---|---|---|
-| `POST /v1/jobs/<variant_key>` | `{seq, user, model, messages}` | `202` pending; `200` with the stored job if this `seq` was already sent |
+| `POST /v1/jobs/<variant_key>` | `{seq, user, model, messages, counts?, limit?}` | `202` pending; `200` with the stored job if this `seq` was already sent |
 | `GET /v1/jobs/<variant_key>` | none | `{status: none\|pending\|done\|error, seq, text?, error?, generations_used, generations_left}` |
 
 `variant_key` is 8–64 letters, digits, `-` or `_`, one per PrairieLearn variant.
+`counts: false` marks an intermediate call, such as the first of two passes, that does not
+use up a generation. `limit` lowers the per-variant generation limit for one question
+(the element sends its `max-runs`); it can never exceed `MAX_GENERATIONS_PER_VARIANT`.
 
 Request errors: `401 unauthorized`, `400 bad_request`, `400 model_not_allowed`,
 `409 busy` (another `seq` is still pending), `409 stale_seq` (an older `seq` was retried),

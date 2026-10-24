@@ -1,66 +1,40 @@
 # `pl-intent-console` (draft)
 
-This course element turns a student's English analysis plan into editable SQL when the student clicks PrairieLearn's **Save** button. Clicking **Save & Grade** preserves and grades the SQL currently in the editor.
+This course element turns a student's English analysis plan into editable SQL when the student clicks **Generate SQL**. Clicking **Save & Grade** grades the SQL currently in the editor.
 
-## Local setup with Docker and Gemini
+## Local setup
 
-Prerequisites:
+SQL generation goes through the English-to-SQL proxy in `proxy/` (see `proxy/README.md`),
+which holds the OpenAI key and enforces the generation limits. The element never sees the
+key, and the student's browser never calls the proxy.
 
-- Docker Desktop, or another running Docker Engine with Docker Compose
-- A Gemini API key created in Google AI Studio
+1. Start the proxy. In `proxy/`, run `npm install`, copy `.dev.vars.example` to `.dev.vars`,
+   fill in your OpenAI key and a course token, then run `npx wrangler dev`.
+2. Copy `.devcontainer/.env.example` to `.devcontainer/.env` (Git-ignored) and set
+   `ENGLISH_TO_SQL_PROXY_TOKEN` to the same course token.
+3. Start PrairieLearn from the repository root and open [http://localhost:3000](http://localhost:3000):
 
-From the repository root, copy the committed example configuration:
+   ```bash
+   docker compose --env-file .devcontainer/.env -f .devcontainer/docker-compose.yml up
+   ```
 
-```bash
-cp .devcontainer/.env.example .devcontainer/.env
+The element reads these server-side settings:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `ENGLISH_TO_SQL_PROXY_URL` | `http://host.docker.internal:8787` (Compose) | Proxy address |
+| `ENGLISH_TO_SQL_PROXY_TOKEN` | required | The proxy's `COURSE_TOKEN` |
+| `ENGLISH_TO_SQL_MODEL` | `gpt-4.1-mini` | Must be in the proxy's `ALLOWED_MODELS` |
+
+Hosted PrairieLearn passes no environment variables to question code, so a deployed question
+instead reads `serverFilesQuestion/llm_config.json`:
+
+```json
+{ "proxy_url": "https://english-to-sql-proxy.<account>.workers.dev", "token": "<COURSE_TOKEN>", "model": "gpt-4.1-mini" }
 ```
 
-Open `.devcontainer/.env` and replace the placeholder with your own Gemini API key:
-
-```text
-ENGLISH_TO_SQL_API_KEY=replace-with-your-own-gemini-api-key
-ENGLISH_TO_SQL_MODEL=gemini-3.8-flash
-ENGLISH_TO_SQL_API_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
-```
-
-The real `.devcontainer/.env` file is ignored by Git. Never put the key in `question.html`, `server.py`, an element attribute, a client-side file, `.env.example`, or any committed file.
-
-Start PrairieLearn:
-
-```bash
-docker compose \
-  --env-file .devcontainer/.env \
-  -f .devcontainer/docker-compose.yml \
-  up
-```
-
-Once the logs report that PrairieLearn is ready, open [http://localhost:3000](http://localhost:3000). Keep the terminal open while developing. To run the containers in the background instead, add `-d` after `up`.
-
-Stop PrairieLearn and remove its containers when finished:
-
-```bash
-docker compose \
-  --env-file .devcontainer/.env \
-  -f .devcontainer/docker-compose.yml \
-  down
-```
-
-The downloaded Docker images and repository files remain available, so the same `up` command will start the environment again later.
-
-To verify that the API key reached the container without displaying it:
-
-```bash
-docker compose \
-  --env-file .devcontainer/.env \
-  -f .devcontainer/docker-compose.yml \
-  exec prairielearn \
-  sh -c 'test -n "$ENGLISH_TO_SQL_API_KEY" && echo "Gemini key is configured"'
-```
-
-For a deployed PrairieLearn server, configure the same environment variables through the deployment's secret-management system. The host must allow outbound HTTPS to the configured endpoint. `ENGLISH_TO_SQL_TIMEOUT_SECONDS` may optionally be set and defaults to `20`.
-
-PrairieLearn's question lifecycle timeout must be longer than the provider timeout. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that one-pass and two-pass generation can finish or report their own provider timeout.
-A deployed PrairieLearn administrator must configure an equivalent server-level timeout; this setting cannot be controlled by an individual question.
+The token only works against the proxy, which enforces per-question, per-student, and
+course-wide limits, and it can be rotated with `npx wrangler secret put COURSE_TOKEN`.
 
 ## Instructor authoring quick start
 
@@ -185,15 +159,20 @@ The model never receives the assignment question, reference SQL, expected result
 
 The element stores the student's English under `<answers-name>-source` and SQL under `<answers-name>-generated-code`.
 
-- **Save** generates SQL, overwrites earlier generated or edited SQL, increments the generation count after success, and refreshes the preview.
-- **Save & Grade** preserves and grades the SQL currently visible in the editor; it does not regenerate SQL.
+- **Generate SQL** (the element's own button) starts a generation through the proxy and
+  replaces the SQL in the editor. Most generations finish within the same request; slower
+  ones show "Generating SQL…" while the page checks back every few seconds.
+- **Save** keeps the SQL in the editor, including the student's edits, and refreshes the preview.
+- **Save & Grade** grades the SQL currently visible in the editor; it never generates SQL.
+- `max-runs` successful generations are allowed per variant. The proxy counts them, so
+  students cannot reset the count; failed generations do not count.
 - A failed local check, provider request, or model-output check preserves the previous SQL and does not increment the generation count.
 
 Student and reference queries run against the same restricted, in-memory SQLite database. Only read-only `SELECT` or `WITH` queries are accepted. Grading compares result rows and multiplicity rather than exact SQL text; row order and column labels are ignored.
 
 ## Server-side diagnostics
 
-Every Save and Save & Grade submission emits labeled, multi-line events to
+Every Generate SQL, Save, and Save & Grade submission emits labeled, multi-line events to
 `/tmp/pl-intent-console.log` inside the PrairieLearn container. The element writes directly
 to this file because PrairieLearn treats any stdout or stderr output during `parse()` as a
 course error. A logging failure is ignored so diagnostics can never block a submission.
