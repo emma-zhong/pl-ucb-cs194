@@ -10,69 +10,61 @@ rules:
   - Copy every table, column, alias, and other SQL expression the student explicitly names, even if it is misspelled, unknown, or ambiguous in database_schema.
   - Do not correct, qualify, replace, or infer an intended identifier. For example, if the student writes id, use id even when several tables have an id column.
   - An explicit but invalid identifier is still a supplied detail. Generate the SQL and let SQLite or the autograder report the error.
-  - With one table, use it in FROM if the student does not name it. With multiple tables, use only named_tables.
+  - Add FROM only when the student explicitly names a table. Do not add the sole schema table as a default.
+  - With multiple tables, use only named_tables.
   - Never invent a join. A join needs the join operation, all table names, and the matching columns.
-  - Compile every recognized operation. If it is missing a required detail, return the matching PLAN_ERROR instead of skipping it.
+  - Always return best-effort SQL. Never return a plan error because a detail is missing, invalid, unsupported, or ambiguous.
+  - Compile every recognized operation as far as the student's details allow. If a clause or expression cannot be written without guessing, omit only that part and continue with the rest of the query.
   - Do not add a filter, group, aggregate, DISTINCT, subquery, sort, limit, or offset to improve the answer.
   - SQL clauses may be reordered when SQLite requires it. For example, an ordinary column filter uses WHERE even if it appears after grouping in the plan.
   - Use a subquery only when the student explicitly asks to aggregate a result.
 
 operations:
   use table:
-    needs: a table name, unless database_schema has exactly one table
-    error: MISSING_TABLE
+    write: FROM followed by the explicitly named table
+    if incomplete: omit FROM
   select:
-    needs: at least one column or computed result
-    error: MISSING_COLUMN
+    write: SELECT followed by every explicitly named column or computed result
   select distinct:
-    needs: at least one column
-    error: MISSING_COLUMN
+    write: SELECT DISTINCT followed by every explicitly named column
   filter rows where:
-    needs: a column, comparison, and value
-    missing: {column: MISSING_COLUMN, comparison: MISSING_COMPARISON, value: MISSING_VALUE}
+    write: WHERE using the supplied column, comparison, and value
+    if incomplete: omit this filter
   filter where:
-    needs: a column or aggregate, comparison, and value
-    missing: {target: MISSING_COLUMN, comparison: MISSING_COMPARISON, value: MISSING_VALUE}
-    note: Use WHERE for a column and HAVING for an aggregate.
+    write: WHERE for a supplied column target or HAVING for a supplied aggregate target
+    if incomplete: omit this filter
   group rows by:
-    needs: a grouping column
-    error: MISSING_GROUP_COLUMN
+    write: GROUP BY followed by every supplied grouping column
+    if incomplete: omit GROUP BY
   join:
-    needs: every table and the columns that match
-    missing: {table: MISSING_TABLE, matching columns: MISSING_JOIN_CONDITION}
+    write: JOIN every explicitly named table and add ON only when matching columns are supplied
   compute count distinct of:
-    needs: an input column or rows
-    error: MISSING_AGGREGATE_INPUT
+    write: COUNT(DISTINCT input) when an input is supplied
   compute count of:
-    needs: an input column or rows
-    error: MISSING_AGGREGATE_INPUT
+    write: COUNT(input) when an input is supplied
   compute sum of:
-    needs: an input column
-    error: MISSING_AGGREGATE_INPUT
+    write: SUM(input) when an input is supplied
   compute average of:
-    needs: an input column
-    error: MISSING_AGGREGATE_INPUT
+    write: AVG(input) when an input is supplied
   compute minimum of:
-    needs: an input column
-    error: MISSING_AGGREGATE_INPUT
+    write: MIN(input) when an input is supplied
   compute maximum of:
-    needs: an input column
-    error: MISSING_AGGREGATE_INPUT
+    write: MAX(input) when an input is supplied
   keep groups where:
-    needs: an aggregate or its alias, comparison, and value
-    missing: {aggregate: MISSING_AGGREGATE_INPUT, comparison: MISSING_COMPARISON, value: MISSING_VALUE}
+    write: HAVING using the supplied aggregate or alias, comparison, and value
+    if incomplete: omit HAVING
   aggregate the result with:
-    needs: a supported aggregate and its input
-    missing: {function: MISSING_AGGREGATE_FUNCTION, input: MISSING_AGGREGATE_INPUT}
+    write: an outer query using the supplied aggregate function and input
+    if incomplete: omit the outer aggregate and keep the inner query
   order by:
-    needs: a column or computed value, plus ascending or descending
-    missing: {expression: MISSING_SORT_EXPRESSION, direction: MISSING_SORT_DIRECTION}
+    write: ORDER BY using the supplied expression and direction
+    if incomplete: omit ORDER BY
   keep the first:
-    needs: a nonnegative row count
-    error: MISSING_ROW_COUNT
+    write: LIMIT followed by the supplied row count
+    if incomplete: omit LIMIT
   skip the first:
-    needs: a nonnegative row count
-    error: MISSING_ROW_COUNT
+    write: OFFSET followed by the supplied row count
+    if incomplete: omit OFFSET
 
 interpretation:
   - A comparison against an aggregate is a group filter. A comparison against a regular column is a row filter.
@@ -87,32 +79,9 @@ default_select:
   - "Otherwise, select *."
   - These defaults may not add DISTINCT, an aggregate, a grouping column, a predicate, or an outer aggregation.
 
-errors:
-  format: PLAN_ERROR:<REASON>
-  allowed_reasons:
-    - MISSING_TABLE
-    - MISSING_COLUMN
-    - MISSING_COMPARISON
-    - MISSING_VALUE
-    - MISSING_GROUP_COLUMN
-    - MISSING_AGGREGATE_FUNCTION
-    - MISSING_AGGREGATE_INPUT
-    - MISSING_SORT_EXPRESSION
-    - MISSING_SORT_DIRECTION
-    - MISSING_ROW_COUNT
-    - MISSING_JOIN_CONDITION
-    - AMBIGUOUS_DETAIL
-    - UNSUPPORTED_OPERATION
-  rules:
-    - Use the most specific reason for the earliest incomplete operation.
-    - Use a missing-detail error only when the student did not supply that detail at all. Do not use it for an explicit but invalid detail.
-    - Use AMBIGUOUS_DETAIL only when the student's wording does not provide one concrete expression to copy. A concrete but schema-ambiguous name such as id is not a reason to return this error.
-    - Use UNSUPPORTED_OPERATION when unmatched wording, code, or shorthand appears to request another operation.
-    - Never fill in a missing detail from the schema or a guessed assignment.
-
 output:
-  - Return exactly one complete SQLite SELECT or WITH statement ending in a semicolon.
-  - The statement must be syntactically complete, but it does not need to execute successfully. Preserve explicit student errors for SQLite or the autograder to catch.
-  - If the plan cannot be translated, return exactly one allowed PLAN_ERROR value.
+  - Return exactly one best-effort SQLite SELECT or WITH statement ending in a semicolon.
+  - The statement does not need to execute successfully. Preserve student errors for SQLite or the autograder to catch.
+  - Never return PLAN_ERROR or ask for more detail.
   - Return no Markdown, comments, labels, explanations, alternatives, or second statement.
   - Never use INSERT, UPDATE, DELETE, REPLACE, DROP, ALTER, CREATE, PRAGMA, ATTACH, DETACH, or VACUUM.
