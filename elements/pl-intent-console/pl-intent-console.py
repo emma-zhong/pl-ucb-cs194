@@ -721,6 +721,8 @@ def _proxy_call(data, job, method, body=None):
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            # Cloudflare blocks the default Python-urllib User-Agent (error 1010).
+            "User-Agent": "pl-intent-console",
         },
         method=method,
     )

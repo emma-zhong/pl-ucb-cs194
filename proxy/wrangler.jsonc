@@ -13,7 +13,7 @@
 	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Job", "Budget"] }],
 	"vars": {
 		"OPENAI_API_URL": "https://api.openai.com/v1/chat/completions",
-		"ALLOWED_MODELS": "gpt-4.1-mini,gpt-5.4-mini",
+		"ALLOWED_MODELS": "gpt-4.1-mini",
 		// These models reject "temperature", so the proxy leaves it out for them.
 		"NO_TEMPERATURE_MODELS": "gpt-5.5,gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra,gpt-6-luna,gpt-6-sol,gpt-6-astra,gpt-6.1-sol",
 		"MAX_GENERATIONS_PER_VARIANT": "10",
