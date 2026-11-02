@@ -71,6 +71,37 @@ PLAN_ERROR_MESSAGES = {
     ),
 }
 
+STANDARD_SQL_OPERATION_RULES = """Apply only operations listed in
+recognized_operations. Compile each recognized canonical operation as follows:
+- use table: add FROM with the explicitly named table or intermediate result.
+- select: add SELECT with every explicitly named column or computed result.
+- select distinct: add SELECT DISTINCT with every explicitly named column.
+- filter rows where: add WHERE with the supplied non-aggregate column,
+  comparison, and value.
+- filter where: add WHERE for a supplied non-aggregate target or HAVING for a
+  supplied aggregate target.
+- group rows by: add GROUP BY with every supplied grouping column.
+- join: add JOIN for every explicitly named source and ON only with the supplied
+  matching columns.
+- compute count distinct of: use COUNT(DISTINCT input).
+- compute count of: use COUNT(input).
+- compute sum of: use SUM(input).
+- compute average of: use AVG(input).
+- compute minimum of: use MIN(input).
+- compute maximum of: use MAX(input).
+- keep groups where: add HAVING with the supplied aggregate or alias,
+  comparison, and value.
+- aggregate the result with: use an outer query with the supplied aggregate and
+  input.
+- order by: add ORDER BY with the supplied expression and direction.
+- keep the first: add LIMIT with the supplied row count.
+- skip the first: add OFFSET with the supplied row count.
+
+Do not compile an operation that is absent from recognized_operations. If a
+recognized operation lacks an argument required to write its SQL, omit only the
+incomplete SQL part instead of guessing. The instructor specification may add
+question-specific behavior or explicitly override these standard compilation rules."""
+
 
 def _new_trace_id():
     return uuid.uuid4().hex[:12]
@@ -1107,6 +1138,9 @@ but it must never create another operation or word-based modifier. Do not solve 
 assignment question, repair logic, or infer an operation from likely intent.
 When database_schema has multiple tables, use only tables listed in named_tables. Never
 invent an unnamed table or join.
+
+STANDARD SQL OPERATION COMPILATION
+{STANDARD_SQL_OPERATION_RULES}
 
 INSTRUCTOR SPECIFICATION
 {intent_spec}

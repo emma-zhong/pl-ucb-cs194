@@ -14,26 +14,6 @@ rules:
   - Always return best-effort SQL. If a clause cannot be written without guessing, omit only that clause and continue.
   - SQL clauses and CTEs may be reordered only when SQLite syntax requires it.
 
-operations:
-  use table:
-    write: FROM followed by the explicitly named table or intermediate result
-  select:
-    write: SELECT followed by every explicitly named column or computed result
-  filter rows where:
-    write: WHERE using the supplied column, comparison, and value
-  group rows by:
-    write: GROUP BY followed by every supplied grouping column
-  join:
-    write: JOIN the explicitly named sources using all supplied matching columns
-  compute count of:
-    write: COUNT(input) using the supplied input and alias, if any
-  compute sum of:
-    write: SUM(input) using the supplied input and alias, if any
-  order by:
-    write: ORDER BY the supplied expression and direction
-  keep the first:
-    write: LIMIT followed by the supplied row count for a global ordered result
-
 per_group_top_n:
   - If and only if the student explicitly says to perform an order and keep operation separately for each named group, implement it with ROW_NUMBER() OVER (PARTITION BY the named group columns ORDER BY the supplied expression and direction).
   - Keep rows whose generated row number is less than or equal to the supplied count.

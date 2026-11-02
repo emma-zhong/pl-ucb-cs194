@@ -67,7 +67,7 @@ A deployed PrairieLearn administrator must configure an equivalent server-level 
 1. Put each source CSV in the question's `serverFilesQuestion` directory.
 2. Add a database-schema JSON file describing every available SQL table.
 3. Add a canonical dictionary defining the allowed operations and modifiers.
-4. Add an instructor intent specification describing how recognized operations map to SQL and when generation must fail.
+4. Add an instructor intent specification describing question-specific SQL behavior, overrides, and failure conditions.
 5. Add the element to `question.html`, and set the reference SQL named by `reference-name` in `server.py`.
 
 For example:
@@ -185,7 +185,7 @@ df = df[df['year'] == 2023] df.groupby('customer_id')
 
 ## Intent specification and model boundary
 
-The intent specification defines how recognized canonical operations map to SQLite and which missing details produce `PLAN_ERROR:<REASON>`. Supported reasons cover missing or unsupported operations, tables, columns, comparisons, values, grouping columns, aggregate details, join conditions, sort details, row counts, and ambiguous details.
+The element centrally defines the standard SQLite compilation for its canonical operations, so question-level intent specifications do not need an `operations:` section. An intent specification should contain only question-specific behavior, interpretations, defaults, overrides, and any conditions that produce `PLAN_ERROR:<REASON>`. Supported reasons cover missing or unsupported operations, tables, columns, comparisons, values, grouping columns, aggregate details, join conditions, sort details, row counts, and ambiguous details.
 
 The mapping pass receives only the instructor's dictionary mappings and the student's English plan. The SQL-generation pass receives only:
 
