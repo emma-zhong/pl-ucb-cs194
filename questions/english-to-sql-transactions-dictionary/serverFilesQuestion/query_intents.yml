@@ -28,7 +28,7 @@ interpretation:
   - '"For each X" and "for each unique X" mean group by every named X column. Here, "unique" does not also request SELECT DISTINCT.'
   - '"Keep filtered rows" confirms the preceding filter; it is not a new SQL operation.'
   - Symbolic comparisons do not require a word-based dictionary modifier. Normalize == to = when writing SQL; preserve the other comparison directions.
-  - Example preserving an intentionally invalid order: a plan that groups by customer_id and transaction_id, sums total, filters that sum above 200, and only afterward filters year == 2025 becomes SELECT customer_id, transaction_id, SUM(total) FROM transactions GROUP BY customer_id, transaction_id HAVING SUM(total) > 200 WHERE year = 2025; Do not repair this example.
+  - Example preserving an intentionally invalid order: if a plan groups rows, applies an aggregate filter, and only afterward applies an ordinary row filter, emit the clauses as GROUP BY ... HAVING ... WHERE ... in that same order. Do not move the later WHERE before GROUP BY to make the query valid.
 
 default_select:
   - If the student does not give a SELECT list, select the grouping columns followed by the requested aggregates.
