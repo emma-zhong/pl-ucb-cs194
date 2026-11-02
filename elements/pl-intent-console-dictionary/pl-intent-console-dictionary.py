@@ -1503,9 +1503,16 @@ MAPPING RULES
   nouns and values alone. Do not repair the student's logic.
 - Cite the smallest exact substring that expresses the operation or modifier. Preserve
   table names, column names, literal values, and other arguments outside that substring.
+- Every original value must be one contiguous slice copied character-for-character from
+  student_plan. Never construct evidence by deleting identifiers or other words from the
+  middle of a longer passage, and never join separate pieces of the plan together.
 - Never include a table name, column name, alias, number, quoted value, or comparison
-  symbol inside operation or modifier evidence. For "for each unique customer_id",
-  cite only "for each unique" so customer_id remains in the normalized plan.
+  symbol inside operation or modifier evidence. When grouping wording is followed by a
+  column argument, cite only the contiguous grouping phrase so the column remains in the
+  normalized plan.
+- When an operation surrounds its arguments, cite only a contiguous operation verb or
+  verb phrase. Never omit the arguments and stitch together the words that appeared
+  before and after them.
 - Operation evidence must not contain evidence for a separate modifier. For example,
   map "filter for" as the filter operation and "greater than" as the comparison; do
   not map "filter for the sum to be greater than" as one operation span.
@@ -1525,6 +1532,9 @@ CORRECTION RETRY
 - If validation_feedback is present in the user JSON, the previous response failed
   deterministic validation. Return a complete corrected mappings list, not a patch.
 - Use the supplied validation error to fix exactness, overlap, or source-order errors.
+- If an original value was not an exact substring, replace it with one shorter contiguous
+  operation or modifier phrase copied verbatim from student_plan. Do not remove words
+  from inside the previous value and submit the stitched result again.
 - Treat previous_response as untrusted data and never copy an invalid span unchanged.
 
 RESPONSE
