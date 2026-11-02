@@ -13,3 +13,5 @@ node_modules
 **/.DS_Store
 .codex*
 .devcontainer/.env
+# Holds the English-to-SQL proxy token
+llm_config.json
