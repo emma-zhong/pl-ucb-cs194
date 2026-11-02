@@ -15,3 +15,6 @@ node_modules
 .devcontainer/.env
 # Holds the English-to-SQL proxy token
 llm_config.json
+
+# Local eval results and logs (scripts/eval/run_eval.py)
+scripts/eval/results/
