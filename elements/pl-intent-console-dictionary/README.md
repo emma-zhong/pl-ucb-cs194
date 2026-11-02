@@ -1,6 +1,6 @@
 # `pl-intent-console-dictionary` (draft)
 
-This course element uses one LLM pass to map a student's wording through an instructor-authored canonical dictionary, then a second LLM pass to convert the normalized plan into editable SQL when the student clicks **Generate SQL**. Clicking **Save & Grade** grades the SQL currently in the editor.
+This course element uses one LLM pass to map a student's wording through an instructor-authored canonical dictionary, then a second LLM pass to convert the normalized plan into editable SQLite, pandas, or Polars code when the student clicks the element's **Generate** button (labeled **Generate SQL**, **Generate pandas**, or **Generate Polars**). Clicking **Save & Grade** grades the code currently in the editor.
 
 ## Local setup
 
@@ -39,10 +39,10 @@ course-wide limits, and it can be rotated with `npx wrangler secret put COURSE_T
 ## Instructor authoring quick start
 
 1. Put each source CSV in the question's `serverFilesQuestion` directory.
-2. Add a database-schema JSON file describing every available SQL table.
-3. Add a canonical dictionary of accepted student phrases.
-4. Add an instructor intent specification describing how recognized operations map to SQL and when generation must fail.
-5. Add the element to `question.html`, and set the reference SQL named by `reference-name` in `server.py`.
+2. Add a database-schema JSON file describing every available data table.
+3. Add a canonical dictionary defining the allowed operations and modifiers.
+4. Add an instructor intent specification describing question-specific rendering behavior, overrides, and failure conditions.
+5. Add the element to `question.html`, and set reference code in the selected output language under the name given by `reference-name` in `server.py`.
 
 For example:
 
@@ -62,7 +62,21 @@ For example:
 </pl-intent-console-dictionary>
 ```
 
-`database-schema`, `dictionary`, and `intent-spec` are filenames relative to `serverFilesQuestion`.
+`database-schema`, `dictionary`, and `intent-spec` are filenames relative to `serverFilesQuestion`. Supported `output-mode` values are `sql`, `pandas`, and `polars`.
+
+For `pandas` and `polars`, each configured table is preloaded as a DataFrame variable with the table's exact name. Generated programs contain only simple assignments and must assign the final DataFrame to `result`. Reference code must follow the same contract and use the same output language as the question.
+
+The PrairieLearn Python environment must provide the selected package. The current local image provides pandas but not Polars. For a temporary local Polars test installation in an already-running container:
+
+```bash
+docker compose \
+  --env-file .devcontainer/.env \
+  -f .devcontainer/docker-compose.yml \
+  exec prairielearn \
+  uv pip install --python /PrairieLearn/.venv/bin/python3 'polars>=1,<2'
+```
+
+That installation disappears when the container is recreated. A deployed course using `output-mode="polars"` should install Polars in its PrairieLearn image or Python environment. If a package is unavailable, the element reports a configuration error without executing student code.
 
 ## Database schema format
 
@@ -114,45 +128,32 @@ Schema rules:
 - Optional column types are `INTEGER`, `REAL`, or `TEXT`; omitted types are inferred.
 - Optional table and column descriptions are included in the schema shown to the model.
 
-The element validates the schema before generation and builds the model's SQL schema automatically. Instructors do not need to repeat the database definition in the intent specification. For backward compatibility, a one-table question may use `data-source="transactions.csv"` instead of `database-schema`; specify exactly one.
+The element validates the schema before generation and builds the model's backend-appropriate schema context automatically. Instructors do not need to repeat the database definition in the intent specification. For backward compatibility, a one-table question may use `data-source="transactions.csv"` instead of `database-schema`; specify exactly one.
 
 ## Canonical dictionary format
 
-Each entry must be an `operation` or a `modifier`, give one canonical phrase, and list example student phrases that map to it. The first model pass receives these mappings and the student's plan, identifies exact source spans, and returns the appropriate canonical phrases. This means instructors can adjust accepted wording by editing the mapping examples rather than changing server-side regular expressions. Clear ordinary-English paraphrases of the examples may also be mapped; the pass may not infer operations from the assignment, schema, or likely answer.
+Put each canonical phrase under `operations` or `modifiers` and define its meaning in one sentence. Instructors do not need to enumerate synonyms. The first model pass uses these definitions to identify explicit operations and modifiers in the student's plan, cites the exact source spans, and returns the appropriate canonical phrases. It may recognize any unambiguous ordinary-English wording that expresses a listed definition, but it may not infer operations from the assignment, schema, or likely answer.
 
 ```yaml
-normalizations:
-  - canonical: group rows by
-    kind: operation
-    phrases:
-      - for each unique
-      - for each
-  - canonical: compute sum of
-    kind: operation
-    phrases:
-      - sum their
-      - sum the
-  - canonical: filter where
-    kind: operation
-    phrases:
-      - filter again for
-      - filter for
-  - canonical: keep filtered rows
-    kind: modifier
-    phrases:
-      - keep those rows only
-      - keep those rows
+operations:
+  group rows by: Divide rows into groups using one or more explicitly named columns.
+  compute sum of: Add the values of an explicitly named column or expression.
+  filter where: Apply a condition to an explicitly named column or aggregate.
+
+modifiers:
+  greater than: Compare whether the left value is larger than the right value.
+  keep filtered rows: Confirm that the rows selected by the preceding filter are retained.
 ```
 
-Use an operation for wording that authorizes a SQL action, such as grouping, aggregation, filtering, sorting, limiting, or joining. Use a modifier only to refine a recognized operation. The server validates the first pass against the instructor's canonical entries, requires exact non-overlapping evidence from the student's plan, and requires at least one recognized operation before making the SQL-generation call. Unmatched wording is preserved as a possible argument or connector, but it cannot authorize another SQL operation, comparison, or sort direction.
+Use an operation for wording that authorizes a data transformation, such as grouping, aggregation, filtering, sorting, limiting, or joining. Use a modifier only to refine a recognized operation. Keep definitions distinct enough that one explicit phrase does not plausibly match several entries. The server validates the first pass against the instructor's canonical entries, requires exact non-overlapping evidence from the student's plan, and requires at least one recognized operation before making the code-generation call. Unmatched wording is preserved as a possible argument or connector, but it cannot authorize another operation, comparison, or sort direction.
 
-For multi-table questions, include a canonical `join` operation and appropriate phrases if joins are allowed. The intent specification must require the student to provide both table names and the matching columns.
+For multi-table questions, include a canonical `join` operation if joins are allowed. The intent specification must require the student to provide both table names and the matching columns.
 
 ## Student plan requirements
 
 Table-name requirements depend on the configured schema:
 
-- With one table, the student may omit its name. The element may add that table only as SQL `FROM` scaffolding.
+- With one table, the student may omit its name when the question-specific intent specification allows the sole table to be used as backend scaffolding.
 - With multiple tables, the student must name every table used.
 - A join must name both tables and state the matching columns. The model may not introduce an unnamed table or invent a join.
 
@@ -172,32 +173,35 @@ df = df[df['year'] == 2023] df.groupby('customer_id')
 
 ## Intent specification and model boundary
 
-The intent specification defines how recognized canonical operations map to SQLite and which missing details produce `PLAN_ERROR:<REASON>`. Supported reasons cover missing or unsupported operations, tables, columns, comparisons, values, grouping columns, aggregate details, join conditions, sort details, row counts, and ambiguous details.
+The element centrally defines standard SQLite, pandas, and Polars rendering for its canonical operations, so question-level intent specifications do not need an `operations:` section. An intent specification should contain only question-specific behavior, interpretations, defaults, overrides, and any conditions that produce `PLAN_ERROR:<REASON>`. Supported reasons cover missing or unsupported operations, tables, columns, comparisons, values, grouping columns, aggregate details, join conditions, sort details, row counts, and ambiguous details.
 
-The mapping pass receives only the instructor's dictionary mappings and the student's English plan. The SQL-generation pass receives only:
+The mapping pass receives only the instructor's dictionary mappings and the student's English plan. The code-generation pass receives only:
 
 - the schema generated from the configured database;
+- the selected output mode;
 - the instructor generation specification;
 - the validated dictionary-normalized plan;
 - exhaustive lists of recognized operations and modifiers; and
 - the configured table names explicitly mentioned in the plan.
 
-It does not receive the original unmatched prose as a separate field, dictionary audit entries, assignment question, reference SQL, expected result, grading outcome, or hidden tests. It must return exactly one complete SQLite `SELECT` or `WITH` statement, or one controlled plan error.
+It does not receive the original unmatched prose as a separate field, dictionary audit entries, assignment question, reference code, expected result, grading outcome, or hidden tests. In SQL mode it must return exactly one complete SQLite `SELECT` or `WITH` statement. In pandas or Polars mode it must return simple assignment statements ending in `result = ...`. It may instead return one controlled plan error.
 
 ## Saving, previewing, and grading
 
-The element stores the student's English under `<answers-name>-source` and SQL under `<answers-name>-generated-code`.
+The element stores the student's English under `<answers-name>-source` and generated code under `<answers-name>-generated-code`.
 
-- **Generate SQL** (the element's own button) starts a generation through the proxy and
-  replaces the SQL in the editor. Most generations finish within the same request; slower
-  ones show "Generating SQL…" while the page checks back every few seconds.
-- **Save** keeps the SQL in the editor, including the student's edits, and refreshes the preview.
-- **Save & Grade** grades the SQL currently visible in the editor; it never generates SQL.
+- **Generate** (the element's own button) starts a generation through the proxy: it maps
+  and normalizes the plan, generates code in the configured output mode, and replaces the
+  code in the editor. A mapping that fails validation is retried with the error, up to 3
+  mapping calls, and retries do not use up a generation. Slower generations show
+  "Generating…" while the page checks back every few seconds.
+- **Save** keeps the code in the editor, including the student's edits, and refreshes the preview.
+- **Save & Grade** grades the code currently visible in the editor; it never generates code.
 - `max-runs` successful generations are allowed per variant. The proxy counts them, so
   students cannot reset the count; failed generations do not count.
-- A failed local check, provider request, or model-output check preserves the previous SQL and does not increment the generation count.
+- A failed local check, provider request, or model-output check preserves the previous code and does not increment the generation count.
 
-Student and reference queries run against all configured tables in one restricted, in-memory SQLite database. Only read-only `SELECT` or `WITH` queries are accepted. Grading compares result rows and multiplicity rather than exact SQL text; row order and column labels are ignored.
+In SQL mode, student and reference queries run against all configured tables in one restricted, in-memory SQLite database, and only read-only `SELECT` or `WITH` queries are accepted. In pandas and Polars modes, CSV-backed DataFrames execute through a restricted AST interpreter: imports, arbitrary functions and methods, callbacks, lambdas, comprehensions, private attributes, cross joins, file access, and network access are rejected. Input, join, syntax-tree, and intermediate-result limits constrain execution. Grading compares result rows and multiplicity rather than exact code; row order and column labels are ignored.
 
 ## Server-side diagnostics
 
@@ -209,12 +213,12 @@ submission.
 
 The log covers input screening, table filtering, both model requests and outputs, the
 dictionary-normalized plan and replacements, recognized operations and modifiers, generated
-SQL, preview execution, and grading. Each event has a `trace_id`; parse events for one button
+code, preview execution, and grading. Each event has a `trace_id`; parse events for one button
 press share one ID, while grading uses its own ID.
 
-The log omits API credentials, authorization headers, system prompts, reference SQL, and
+The log omits API credentials, authorization headers, system prompts, reference code, and
 reference rows. It contains student-authored text, dictionary mappings sent to the first
-model pass, normalized plans, and SQL, so production access and retention should follow the
+model pass, normalized plans, and generated code, so production access and retention should follow the
 course's student-data policy. Follow it from the repository root with:
 
 ```bash
