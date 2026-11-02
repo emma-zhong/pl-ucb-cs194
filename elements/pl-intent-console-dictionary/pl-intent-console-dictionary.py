@@ -1,5 +1,9 @@
+import ast
 import csv
 import json
+import keyword
+import math
+import operator
 import os
 import re
 import sqlite3
@@ -16,6 +20,10 @@ DEFAULT_ROW_LIMIT = 20
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_RUNS = 10
 MAX_GRADE_ROWS = 10000
+MAX_FRAME_ROWS = 100000
+MAX_JOIN_PRODUCT = 2000000
+MAX_PYTHON_AST_NODES = 500
+SUPPORTED_OUTPUT_MODES = {"sql", "pandas", "polars"}
 LOG_PREFIX = "pl-intent-console-dictionary"
 LOG_FILE = os.environ.get(
     "ENGLISH_TO_SQL_DICTIONARY_LOG_FILE",
@@ -102,6 +110,80 @@ recognized operation lacks an argument required to write its SQL, omit only the
 incomplete SQL part instead of guessing. The instructor specification may add
 question-specific behavior or explicitly override these standard compilation rules."""
 
+STANDARD_PANDAS_OPERATION_RULES = """The configured CSV tables are already loaded as
+pandas DataFrames whose variable names exactly match the table names. Apply only
+operations listed in recognized_operations and use these forms:
+- use table: refer to the explicitly named DataFrame.
+- select or select distinct: use column selection; add drop_duplicates() only for
+  select distinct.
+- filter rows where or filter where: use boolean indexing with explicit columns,
+  comparisons, and values.
+- group rows by: use groupby(..., as_index=False).
+- join: use merge() with the explicitly named DataFrames and supplied keys.
+- compute count distinct, count, sum, average, minimum, or maximum: use named
+  aggregation with agg(new_name=(input_column, function_name)).
+- keep groups where: filter the already aggregated DataFrame with boolean indexing.
+- aggregate the result with: create a one-row pd.DataFrame whose dictionary key is
+  the requested result name and whose list value contains the requested Series
+  aggregate, or len(prior_dataframe) when counting result rows.
+- order by: use sort_values() with the supplied columns and direction.
+- keep the first or skip the first: use head() or iloc[row_count:].
+
+Use simple assignment statements for intermediate DataFrames and assign the final
+DataFrame to result. Do not import anything. Do not use apply, map, transform, eval,
+query, lambdas, comprehensions, file access, network access, plotting, or mutation.
+If a recognized operation lacks a required argument, omit only that incomplete part.
+The instructor specification may add question-specific behavior or explicitly override
+these standard compilation rules."""
+
+STANDARD_POLARS_OPERATION_RULES = """The configured CSV tables are already loaded as
+Polars DataFrames whose variable names exactly match the table names, and the pl
+namespace is available. Apply only operations listed in recognized_operations and use
+these forms:
+- use table: refer to the explicitly named DataFrame.
+- select or select distinct: use select(); add unique() only for select distinct.
+- filter rows where or filter where: use filter() with pl.col() expressions.
+- group rows by: use group_by().
+- join: use join() with the explicitly named DataFrames and supplied keys.
+- compute count distinct, count, sum, average, minimum, or maximum: use pl.col()
+  expressions with n_unique(), count(), sum(), mean(), min(), or max(), followed by
+  alias() when a result name is supplied.
+- keep groups where: filter the already aggregated DataFrame.
+- aggregate the result with: select the requested aggregate from the prior DataFrame.
+- order by: use sort() with the supplied columns and descending value.
+- keep the first or skip the first: use head() or slice(row_count).
+
+Use simple assignment statements for intermediate DataFrames and assign the final
+DataFrame to result. Do not import anything. Do not use apply, map_elements, Python
+callbacks, lambdas, comprehensions, file access, network access, plotting, or mutation.
+If a recognized operation lacks a required argument, omit only that incomplete part.
+The instructor specification may add question-specific behavior or explicitly override
+these standard compilation rules."""
+
+OUTPUT_MODE_CONFIG = {
+    "sql": {
+        "language": "SQLite",
+        "default_code_label": "SQL (generated, editable)",
+        "placeholder": "Click Save to generate SQL from your description.",
+        "reference_label": "One reference SQL query",
+        "operation_rules": STANDARD_SQL_OPERATION_RULES,
+    },
+    "pandas": {
+        "language": "pandas Python",
+        "default_code_label": "pandas (generated, editable)",
+        "placeholder": "Click Save to generate pandas code from your description.",
+        "reference_label": "One reference pandas program",
+        "operation_rules": STANDARD_PANDAS_OPERATION_RULES,
+    },
+    "polars": {
+        "language": "Polars Python",
+        "default_code_label": "Polars (generated, editable)",
+        "placeholder": "Click Save to generate Polars code from your description.",
+        "reference_label": "One reference Polars program",
+        "operation_rules": STANDARD_POLARS_OPERATION_RULES,
+    },
+}
+
 
 def _new_trace_id():
     return uuid.uuid4().hex[:12]
@@ -182,6 +264,8 @@ def _log_event(trace_id, event, **fields):
 def _attributes(element_html):
     element = lxml.html.fragment_fromstring(element_html)
     name = pl.get_string_attrib(element, "answers-name")
+    output_mode = pl.get_string_attrib(element, "output-mode")
+    mode_config = OUTPUT_MODE_CONFIG.get(output_mode, OUTPUT_MODE_CONFIG["sql"])
     return {
         "element": element,
         "name": name,
@@ -198,7 +282,7 @@ def _attributes(element_html):
         "dictionary": pl.get_string_attrib(element, "dictionary"),
         "intent_spec": pl.get_string_attrib(element, "intent-spec"),
         "reference_name": pl.get_string_attrib(element, "reference-name", None),
-        "output_mode": pl.get_string_attrib(element, "output-mode"),
+        "output_mode": output_mode,
         "input_modes": pl.get_string_attrib(element, "input-modes"),
         "editable": pl.get_boolean_attrib(element, "generated-code-editable", False),
         "row_limit": pl.get_integer_attrib(element, "row-limit", DEFAULT_ROW_LIMIT),
@@ -208,8 +292,11 @@ def _attributes(element_html):
             element, "input-label", "Describe your analysis plan in English"
         ),
         "code_label": pl.get_string_attrib(
-            element, "code-label", "SQL (generated, editable)"
+            element, "code-label", mode_config["default_code_label"]
         ),
+        "code_placeholder": mode_config["placeholder"],
+        "reference_label": mode_config["reference_label"],
+        "language": mode_config["language"],
     }
 
 
@@ -262,9 +349,10 @@ def _preview_params(columns, rows):
 
 def prepare(element_html, data):
     attrs = _attributes(element_html)
-    if attrs["output_mode"] != "sql":
+    if attrs["output_mode"] not in SUPPORTED_OUTPUT_MODES:
         raise ValueError(
-            'The draft pl-intent-console-dictionary only supports output-mode="sql".'
+            "The draft pl-intent-console-dictionary supports output-mode values "
+            '"sql", "pandas", and "polars".'
         )
     if attrs["input_modes"] != "english":
         raise ValueError(
@@ -281,7 +369,21 @@ def prepare(element_html, data):
     dictionary_text = _read_question_file(data, attrs["dictionary"])
     _dictionary_entries(dictionary_text)
     _read_question_file(data, attrs["intent_spec"])
-    _load_database_schema(data, attrs)
+    tables = _load_database_schema(data, attrs)
+    if attrs["output_mode"] in {"pandas", "polars"}:
+        reserved_names = {"len", "pd", "pl", "result"}
+        for table in tables:
+            table_name = table["name"]
+            if (
+                not table_name.isidentifier()
+                or keyword.iskeyword(table_name)
+                or table_name.startswith("_")
+                or table_name in reserved_names
+            ):
+                raise ValueError(
+                    f"Table name {table_name!r} cannot be exposed as a safe Python "
+                    f"variable for output-mode={attrs['output_mode']!r}."
+                )
 
 
 def render(element_html, data):
@@ -302,6 +404,9 @@ def render(element_html, data):
         "run_count": _answer(data, attrs["runs_name"], "0"),
         "input_label": attrs["input_label"],
         "code_label": attrs["code_label"],
+        "code_placeholder": attrs["code_placeholder"],
+        "submitted_code_label": f"Submitted {attrs['language']} code",
+        "reference_label": attrs["reference_label"],
         "parse_error": parse_error,
         "input_editable": data.get("editable", True),
         "code_editable": data.get("editable", True) and attrs["editable"],
@@ -473,6 +578,33 @@ def _schema_text(data, attrs):
     return "\n".join(statements)
 
 
+def _schema_for_prompt(data, attrs, output_mode):
+    if output_mode == "sql":
+        return _schema_text(data, attrs)
+    return json.dumps(
+        {
+            "tables": [
+                {
+                    "name": table["name"],
+                    "description": table["description"],
+                    "columns": [
+                        {
+                            "name": column,
+                            "type": table["types"][column],
+                            "description": table["column_descriptions"].get(
+                                column, ""
+                            ),
+                        }
+                        for column in table["columns"]
+                    ],
+                }
+                for table in _load_database_schema(data, attrs)
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
 def _sql_terminators(text):
     terminators = []
     quote = None
@@ -541,6 +673,349 @@ def _clean_sql(response_text, trace_id=None):
     return text
 
 
+PANDAS_ALLOWED_METHODS = {
+    "agg",
+    "assign",
+    "copy",
+    "count",
+    "drop_duplicates",
+    "fillna",
+    "groupby",
+    "head",
+    "isna",
+    "isin",
+    "max",
+    "mean",
+    "merge",
+    "min",
+    "notna",
+    "nunique",
+    "rename",
+    "reset_index",
+    "size",
+    "sort_values",
+    "sum",
+    "tail",
+    "to_frame",
+}
+POLARS_ALLOWED_METHODS = {
+    "agg",
+    "alias",
+    "count",
+    "drop_nulls",
+    "fill_null",
+    "filter",
+    "group_by",
+    "head",
+    "is_in",
+    "is_not_null",
+    "is_null",
+    "join",
+    "max",
+    "mean",
+    "min",
+    "n_unique",
+    "rename",
+    "select",
+    "slice",
+    "sort",
+    "sum",
+    "tail",
+    "unique",
+    "with_columns",
+}
+PANDAS_MODULE_FUNCTIONS = {"DataFrame", "NamedAgg"}
+POLARS_MODULE_FUNCTIONS = {"col", "len", "lit"}
+
+
+def _validate_dataframe_program(text, output_mode):
+    try:
+        tree = ast.parse(text, mode="exec")
+    except SyntaxError as exc:
+        raise ValueError(
+            f"The model returned invalid {output_mode} Python syntax: {exc.msg}."
+        ) from exc
+    if sum(1 for _node in ast.walk(tree)) > MAX_PYTHON_AST_NODES:
+        raise ValueError(
+            f"The {output_mode} program is too complex to execute safely."
+        )
+    if not tree.body:
+        raise ValueError(f"The model returned an empty {output_mode} program.")
+    assigned_names = []
+    for statement in tree.body:
+        if (
+            not isinstance(statement, ast.Assign)
+            or len(statement.targets) != 1
+            or not isinstance(statement.targets[0], ast.Name)
+        ):
+            raise ValueError(
+                f"The {output_mode} program may contain only simple assignments."
+            )
+        target = statement.targets[0].id
+        if target.startswith("_") or target in {"len", "pd", "pl"}:
+            raise ValueError(
+                f"The {output_mode} program uses a reserved assignment target."
+            )
+        assigned_names.append(target)
+    if "result" not in assigned_names:
+        raise ValueError(
+            f"The {output_mode} program must assign its final DataFrame to result."
+        )
+    if assigned_names[-1] != "result":
+        raise ValueError(
+            f"The final assignment in the {output_mode} program must target result."
+        )
+    return tree
+
+
+def _clean_dataframe_code(response_text, output_mode, trace_id=None):
+    text = response_text.strip()
+    if not text:
+        raise ValueError(
+            f"The model returned an empty response instead of {output_mode} code."
+        )
+    if text == "PLAN_NEEDS_MORE_DETAIL":
+        raise ValueError(
+            "The analysis plan is missing a required detail. Include every column, "
+            "comparison, value, calculation input, and sort direction needed by "
+            "your steps."
+        )
+    plan_error = re.fullmatch(r"PLAN_ERROR:([A-Z_]+)", text)
+    if plan_error:
+        reason = plan_error.group(1)
+        message = PLAN_ERROR_MESSAGES.get(reason)
+        if message is None:
+            raise ValueError(
+                "The translator reported an unsupported plan error. Revise the plan "
+                "to state supported operations clearly and specify every argument."
+            )
+        raise ValueError(message)
+    if "```" in text:
+        raise ValueError(
+            f"The model wrapped its {output_mode} code in Markdown instead of "
+            "returning code only."
+        )
+    _validate_dataframe_program(text, output_mode)
+    if trace_id:
+        _log_event(
+            trace_id,
+            "dataframe_model_output_accepted",
+            output_mode=output_mode,
+            generated_code=text,
+        )
+    return text
+
+
+def _clean_generated_code(response_text, output_mode, trace_id=None):
+    if output_mode == "sql":
+        return _clean_sql(response_text, trace_id)
+    return _clean_dataframe_code(response_text, output_mode, trace_id)
+
+
+class _SafeDataFrameEvaluator:
+    def __init__(self, output_mode, environment, module, frame_types, series_types):
+        self.output_mode = output_mode
+        self.environment = environment
+        self.module = module
+        self.frame_types = frame_types
+        self.series_types = series_types
+        self.input_names = set(environment) - {"pd", "pl"}
+
+    def execute(self, tree):
+        for statement in tree.body:
+            target = statement.targets[0].id
+            if target in self.input_names:
+                raise ValueError(
+                    f"The {self.output_mode} program may not replace input table "
+                    f"{target!r}."
+                )
+            value = self.evaluate(statement.value)
+            self._check_result_size(value)
+            self.environment[target] = value
+        if "result" not in self.environment:
+            raise ValueError(
+                f"The {self.output_mode} program did not produce result."
+            )
+        return self.environment["result"]
+
+    def evaluate(self, node):
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, str) and len(node.value) > 1000:
+                raise ValueError("String literals must be 1,000 characters or fewer.")
+            if isinstance(node.value, (int, float)) and abs(node.value) > 10**12:
+                raise ValueError("Numeric literals are outside the supported range.")
+            return node.value
+        if isinstance(node, ast.Name):
+            if node.id not in self.environment:
+                raise ValueError(f"Unknown name in {self.output_mode} code: {node.id}.")
+            return self.environment[node.id]
+        if isinstance(node, ast.List):
+            return [self.evaluate(item) for item in node.elts]
+        if isinstance(node, ast.Tuple):
+            return tuple(self.evaluate(item) for item in node.elts)
+        if isinstance(node, ast.Dict):
+            return {
+                self.evaluate(key): self.evaluate(value)
+                for key, value in zip(node.keys, node.values)
+            }
+        if isinstance(node, ast.Subscript):
+            value = self.evaluate(node.value)
+            return value[self._evaluate_slice(node.slice)]
+        if isinstance(node, ast.Attribute):
+            if node.attr.startswith("_"):
+                raise ValueError("Private attributes are not allowed.")
+            if self.output_mode == "pandas" and node.attr == "iloc":
+                return getattr(self.evaluate(node.value), node.attr)
+            raise ValueError(
+                f"Attribute {node.attr!r} is not allowed outside an approved call."
+            )
+        if isinstance(node, ast.Call):
+            return self._evaluate_call(node)
+        if isinstance(node, ast.Compare):
+            if len(node.ops) != 1 or len(node.comparators) != 1:
+                raise ValueError("Chained comparisons are not supported.")
+            left = self.evaluate(node.left)
+            right = self.evaluate(node.comparators[0])
+            comparison = {
+                ast.Eq: operator.eq,
+                ast.NotEq: operator.ne,
+                ast.Lt: operator.lt,
+                ast.LtE: operator.le,
+                ast.Gt: operator.gt,
+                ast.GtE: operator.ge,
+            }.get(type(node.ops[0]))
+            if comparison is None:
+                raise ValueError("That comparison is not supported.")
+            return comparison(left, right)
+        if isinstance(node, ast.BinOp):
+            operation = {
+                ast.BitAnd: operator.and_,
+                ast.BitOr: operator.or_,
+                ast.Add: operator.add,
+                ast.Sub: operator.sub,
+                ast.Mult: operator.mul,
+                ast.Div: operator.truediv,
+                ast.Mod: operator.mod,
+            }.get(type(node.op))
+            if operation is None:
+                raise ValueError("That binary operation is not supported.")
+            left = self.evaluate(node.left)
+            right = self.evaluate(node.right)
+            if not self._is_dataframe_expression(left, right):
+                raise ValueError(
+                    "Binary operations must involve a DataFrame column expression."
+                )
+            return operation(left, right)
+        if isinstance(node, ast.UnaryOp):
+            operand = self.evaluate(node.operand)
+            if isinstance(node.op, ast.Invert):
+                return operator.invert(operand)
+            if isinstance(node.op, ast.USub):
+                return operator.neg(operand)
+            if isinstance(node.op, ast.UAdd):
+                return operator.pos(operand)
+            raise ValueError("That unary operation is not supported.")
+        raise ValueError(
+            f"Unsupported syntax in {self.output_mode} code: "
+            f"{type(node).__name__}."
+        )
+
+    def _evaluate_slice(self, node):
+        if isinstance(node, ast.Slice):
+            return slice(
+                self.evaluate(node.lower) if node.lower is not None else None,
+                self.evaluate(node.upper) if node.upper is not None else None,
+                self.evaluate(node.step) if node.step is not None else None,
+            )
+        return self.evaluate(node)
+
+    def _evaluate_call(self, node):
+        if any(keyword.arg is None for keyword in node.keywords):
+            raise ValueError("Expanded keyword arguments are not allowed.")
+        args = [self.evaluate(argument) for argument in node.args]
+        kwargs = {
+            keyword.arg: self.evaluate(keyword.value) for keyword in node.keywords
+        }
+        if isinstance(node.func, ast.Name):
+            if node.func.id != "len" or len(args) != 1 or kwargs:
+                raise ValueError(
+                    f"Function {node.func.id!r} is not allowed in dataframe code."
+                )
+            return len(args[0])
+        if not isinstance(node.func, ast.Attribute) or node.func.attr.startswith("_"):
+            raise ValueError("Only approved dataframe method calls are allowed.")
+
+        receiver = self.evaluate(node.func.value)
+        method_name = node.func.attr
+        if receiver is self.module:
+            allowed_functions = (
+                PANDAS_MODULE_FUNCTIONS
+                if self.output_mode == "pandas"
+                else POLARS_MODULE_FUNCTIONS
+            )
+            if method_name not in allowed_functions:
+                raise ValueError(
+                    f"{self.output_mode} function {method_name!r} is not allowed."
+                )
+        else:
+            allowed_methods = (
+                PANDAS_ALLOWED_METHODS
+                if self.output_mode == "pandas"
+                else POLARS_ALLOWED_METHODS
+            )
+            if method_name not in allowed_methods:
+                raise ValueError(
+                    f"{self.output_mode} method {method_name!r} is not allowed."
+                )
+            if method_name in {"merge", "join"}:
+                self._check_join(receiver, args, kwargs)
+
+        try:
+            value = getattr(receiver, method_name)(*args, **kwargs)
+        except Exception as exc:
+            raise ValueError(str(exc)) from exc
+        self._check_result_size(value)
+        return value
+
+    def _check_join(self, receiver, args, kwargs):
+        if not args:
+            raise ValueError("A join must name the other DataFrame.")
+        other = args[0]
+        if not isinstance(receiver, self.frame_types) or not isinstance(
+            other, self.frame_types
+        ):
+            raise ValueError("Joins require two DataFrames.")
+        has_keys = "on" in kwargs or (
+            "left_on" in kwargs and "right_on" in kwargs
+        )
+        if not has_keys:
+            raise ValueError("A join must provide explicit matching columns.")
+        how = kwargs.get("how", "inner")
+        if how not in {"inner", "left", "right", "outer", "full", "semi", "anti"}:
+            raise ValueError(f"Join type {how!r} is not allowed.")
+        try:
+            product = len(receiver) * len(other)
+        except TypeError as exc:
+            raise ValueError("Joins require two DataFrames.") from exc
+        if product > MAX_JOIN_PRODUCT:
+            raise ValueError("The join is too large to execute safely.")
+
+    def _check_result_size(self, value):
+        if isinstance(value, self.frame_types) and len(value) > MAX_FRAME_ROWS:
+            raise ValueError(
+                f"The {self.output_mode} result exceeds the {MAX_FRAME_ROWS}-row "
+                "safety limit."
+            )
+
+    def _is_dataframe_expression(self, *values):
+        return any(
+            isinstance(value, self.series_types) or value.__class__.__module__.startswith(
+                "polars"
+            )
+            for value in values
+        )
+
+
 def _extract_model_text(payload):
     if not isinstance(payload, dict):
         raise ValueError("The LLM response body was not a JSON object.")
@@ -584,16 +1059,16 @@ def _request_timeout():
 def _http_error(status):
     if status in {408, 429, 500, 502, 503, 504}:
         return RuntimeError(
-            "The SQL generation service is temporarily unavailable. "
+            "The code generation service is temporarily unavailable. "
             "Try Save again later; this attempt was not counted against the "
             "generation limit."
         )
     if status in {401, 403}:
         return RuntimeError(
-            "The SQL generation service could not authenticate. Contact the course staff."
+            "The code generation service could not authenticate. Contact the course staff."
         )
     return RuntimeError(
-        f"The SQL generation service request failed with HTTP {status}."
+        f"The code generation service request failed with HTTP {status}."
     )
 
 
@@ -667,7 +1142,7 @@ def _call_model(system_prompt, user_prompt, trace_id=None, purpose="model"):
                 failure="connection_or_timeout",
             )
         raise RuntimeError(
-            "The SQL generation service could not be reached. Try Save again later; "
+            "The code generation service could not be reached. Try Save again later; "
             "this attempt was not counted against the generation limit."
         ) from exc
     if len(response_bytes) > 2_000_000:
@@ -679,7 +1154,7 @@ def _call_model(system_prompt, user_prompt, trace_id=None, purpose="model"):
                 failure="response_too_large",
             )
         raise RuntimeError(
-            "The SQL generation service returned an unexpectedly large response. "
+            "The code generation service returned an unexpectedly large response. "
             "This attempt was not counted against the generation limit."
         )
     try:
@@ -693,7 +1168,7 @@ def _call_model(system_prompt, user_prompt, trace_id=None, purpose="model"):
                 failure="unreadable_response",
             )
         raise RuntimeError(
-            "The SQL generation service returned an unreadable response. "
+            "The code generation service returned an unreadable response. "
             "Try Save again; this attempt was not counted against the generation limit."
         ) from exc
     model_output = _extract_model_text(payload)
@@ -1002,7 +1477,7 @@ def _table_context(student_source, tables, trace_id=None):
     return named_tables
 
 
-def _generate_sql(data, attrs, student_source, trace_id=None):
+def _generate_code(data, attrs, student_source, trace_id=None):
     _screen_student_input(student_source, trace_id)
     tables = _load_database_schema(data, attrs)
     named_tables = _table_context(student_source, tables, trace_id)
@@ -1010,7 +1485,7 @@ def _generate_sql(data, attrs, student_source, trace_id=None):
     dictionary_entries = _dictionary_entries(dictionary_text)
     mapping_system_prompt = """ROLE
 You map wording in a student's English analysis plan to an instructor-authored
-canonical dictionary. You do not generate SQL.
+canonical dictionary. You do not generate code.
 
 INSTRUCTION PRIORITY
 1. Follow these mapping rules exactly.
@@ -1120,8 +1595,24 @@ any other fields."""
         )
 
     intent_spec = _read_question_file(data, attrs["intent_spec"])
+    output_mode = attrs.get("output_mode", "sql")
+    mode_config = OUTPUT_MODE_CONFIG[output_mode]
+    language = mode_config["language"]
+    if output_mode == "sql":
+        response_contract = (
+            "Return only one complete SQLite SELECT or WITH statement ending in a "
+            "semicolon, or the PLAN_ERROR reason required by the specification."
+        )
+    else:
+        response_contract = (
+            f"Return only {language} assignment statements or the PLAN_ERROR reason "
+            "required by the specification. Do not return imports, Markdown, comments, "
+            "expressions without assignments, or explanations. The final DataFrame "
+            "must be assigned to result."
+        )
     system_prompt = f"""ROLE
-You are a grounded translator from a dictionary-normalized English analysis plan to SQLite.
+You are a grounded translator from a dictionary-normalized English analysis plan to
+{language}.
 
 INSTRUCTION PRIORITY
 1. Follow the instructor specification below exactly.
@@ -1139,17 +1630,18 @@ assignment question, repair logic, or infer an operation from likely intent.
 When database_schema has multiple tables, use only tables listed in named_tables. Never
 invent an unnamed table or join.
 
-STANDARD SQL OPERATION COMPILATION
-{STANDARD_SQL_OPERATION_RULES}
+STANDARD {language.upper()} OPERATION COMPILATION
+{mode_config["operation_rules"]}
 
 INSTRUCTOR SPECIFICATION
 {intent_spec}
 
 RESPONSE
-Return only the SQL statement or PLAN_ERROR reason required by the specification."""
+{response_contract}"""
     user_prompt = json.dumps(
         {
-            "database_schema": _schema_text(data, attrs),
+            "database_schema": _schema_for_prompt(data, attrs, output_mode),
+            "selected_output_mode": output_mode,
             "named_tables": named_tables,
             "canonical_plan": normalized_plan["canonical_plan"],
             "recognized_operations": recognized_operations,
@@ -1157,32 +1649,41 @@ Return only the SQL statement or PLAN_ERROR reason required by the specification
         },
         ensure_ascii=False,
     )
-    return _clean_sql(
+    return _clean_generated_code(
         _call_model(
             system_prompt,
             user_prompt,
             trace_id,
-            "sql_generation",
+            f"{output_mode}_generation",
         ),
+        output_mode,
         trace_id,
     )
+
+
+def _generate_sql(data, attrs, student_source, trace_id=None):
+    """Backward-compatible internal entry point for existing tests and tooling."""
+    sql_attrs = dict(attrs)
+    sql_attrs["output_mode"] = "sql"
+    return _generate_code(data, sql_attrs, student_source, trace_id)
 
 
 def _quote_identifier(identifier):
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _convert_value(value, declared_type):
+    if value == "":
+        return None
+    if declared_type == "INTEGER":
+        return int(value)
+    if declared_type == "REAL":
+        return float(value)
+    return value
+
+
 def _database_for_schema(data, attrs):
     connection = sqlite3.connect(":memory:")
-
-    def convert(value, sql_type):
-        if value == "":
-            return None
-        if sql_type == "INTEGER":
-            return int(value)
-        if sql_type == "REAL":
-            return float(value)
-        return value
 
     for table in _load_database_schema(data, attrs):
         columns = table["columns"]
@@ -1198,14 +1699,17 @@ def _database_for_schema(data, attrs):
             f"INSERT INTO {_quote_identifier(table['name'])} "
             f"VALUES ({placeholders})",
             [
-                [convert(row.get(column, ""), types[column]) for column in columns]
+                [
+                    _convert_value(row.get(column, ""), types[column])
+                    for column in columns
+                ]
                 for row in table["rows"]
             ],
         )
     return connection
 
 
-def _run_query(data, attrs, sql, limit, trace_id=None, purpose="query"):
+def _run_sql_query(data, attrs, sql, limit, trace_id=None, purpose="query"):
     if trace_id:
         _log_event(
             trace_id,
@@ -1280,6 +1784,166 @@ def _run_query(data, attrs, sql, limit, trace_id=None, purpose="query"):
         connection.close()
 
 
+def _dataframe_runtime(output_mode):
+    try:
+        if output_mode == "pandas":
+            import pandas as pd
+
+            return pd, (pd.DataFrame,), (pd.Series,)
+        import polars as pl_module
+
+        return pl_module, (pl_module.DataFrame,), (pl_module.Series, pl_module.Expr)
+    except ImportError as exc:
+        package = "pandas" if output_mode == "pandas" else "polars"
+        raise ValueError(
+            f'The PrairieLearn environment must install the {package!r} package '
+            f'before output-mode="{output_mode}" can execute code.'
+        ) from exc
+
+
+def _dataframes_for_schema(data, attrs, output_mode, module):
+    environment = {"pd" if output_mode == "pandas" else "pl": module}
+    for table in _load_database_schema(data, attrs):
+        if (
+            not table["name"].isidentifier()
+            or keyword.iskeyword(table["name"])
+            or table["name"].startswith("_")
+            or table["name"] in {"len", "pd", "pl", "result"}
+        ):
+            raise ValueError(
+                f"Table name {table['name']!r} cannot be exposed as a safe Python "
+                f"variable for output-mode={output_mode!r}."
+            )
+        if len(table["rows"]) > MAX_FRAME_ROWS:
+            raise ValueError(
+                f"Input table {table['name']!r} exceeds the {MAX_FRAME_ROWS}-row "
+                "safety limit."
+            )
+        values = {
+            column: [
+                _convert_value(row.get(column, ""), table["types"][column])
+                for row in table["rows"]
+            ]
+            for column in table["columns"]
+        }
+        try:
+            environment[table["name"]] = module.DataFrame(values)
+        except Exception as exc:
+            raise ValueError(
+                f"Could not load input table {table['name']!r} as {output_mode}: "
+                f"{exc}"
+            ) from exc
+    return environment
+
+
+def _display_value(value, output_mode, module):
+    if value is None:
+        return "NULL"
+    if output_mode == "pandas":
+        try:
+            missing = module.isna(value)
+            if isinstance(missing, bool) and missing:
+                return "NULL"
+        except (TypeError, ValueError):
+            pass
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, float) and math.isnan(value):
+        return "NULL"
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except (TypeError, ValueError):
+            pass
+    return str(value)
+
+
+def _run_dataframe_code(
+    data,
+    attrs,
+    code,
+    limit,
+    trace_id=None,
+    purpose="query",
+):
+    output_mode = attrs["output_mode"]
+    if trace_id:
+        _log_event(
+            trace_id,
+            "dataframe_execution_started",
+            output_mode=output_mode,
+            purpose=purpose,
+            row_limit=limit,
+        )
+    tree = _validate_dataframe_program(code, output_mode)
+    module, frame_types, series_types = _dataframe_runtime(output_mode)
+    environment = _dataframes_for_schema(data, attrs, output_mode, module)
+    evaluator = _SafeDataFrameEvaluator(
+        output_mode,
+        environment,
+        module,
+        frame_types,
+        series_types,
+    )
+    try:
+        result = evaluator.execute(tree)
+        if output_mode == "pandas" and isinstance(result, series_types):
+            result = result.to_frame()
+        if output_mode == "polars" and isinstance(result, module.Series):
+            result = result.to_frame()
+        if not isinstance(result, frame_types):
+            raise ValueError(
+                f"result must be a {output_mode} DataFrame, not "
+                f"{type(result).__name__}."
+            )
+        truncated = len(result) > limit
+        limited = result.head(limit)
+        if output_mode == "pandas":
+            columns = [str(column) for column in limited.columns]
+            raw_rows = limited.itertuples(index=False, name=None)
+        else:
+            columns = [str(column) for column in limited.columns]
+            raw_rows = limited.iter_rows()
+        rows = [
+            [_display_value(value, output_mode, module) for value in row]
+            for row in raw_rows
+        ]
+        if trace_id:
+            _log_event(
+                trace_id,
+                "dataframe_execution_completed",
+                output_mode=output_mode,
+                purpose=purpose,
+                columns=columns,
+                returned_rows=len(rows),
+                truncated=truncated,
+            )
+        return columns, rows, truncated
+    except ValueError:
+        raise
+    except Exception as exc:
+        if trace_id:
+            _log_event(
+                trace_id,
+                "dataframe_execution_failed",
+                output_mode=output_mode,
+                purpose=purpose,
+                error=str(exc),
+            )
+        raise ValueError(
+            f"ERROR: {output_mode} code could not be executed: {exc}"
+        ) from exc
+
+
+def _run_query(data, attrs, code, limit, trace_id=None, purpose="query"):
+    if attrs.get("output_mode", "sql") == "sql":
+        return _run_sql_query(data, attrs, code, limit, trace_id, purpose)
+    return _run_dataframe_code(data, attrs, code, limit, trace_id, purpose)
+
+
 def parse(element_html, data):
     attrs = _attributes(element_html)
     trace_id = _new_trace_id()
@@ -1300,7 +1964,8 @@ def parse(element_html, data):
         run_count=run_count,
         max_runs=attrs["max_runs"],
         student_plan=source,
-        editor_sql=code,
+        output_mode=attrs["output_mode"],
+        editor_code=code,
     )
 
     if generate:
@@ -1312,16 +1977,17 @@ def parse(element_html, data):
         elif run_count >= attrs["max_runs"]:
             data["format_errors"][
                 attrs["name"]
-            ] = f"This question allows at most {attrs['max_runs']} SQL generations."
+            ] = f"This question allows at most {attrs['max_runs']} code generations."
             _log_event(trace_id, "generation_skipped", reason="generation_limit")
         else:
             try:
-                code = _generate_sql(data, attrs, source, trace_id)
+                code = _generate_code(data, attrs, source, trace_id)
                 run_count += 1
                 _log_event(
                     trace_id,
                     "generation_succeeded",
-                    generated_sql=code,
+                    output_mode=attrs["output_mode"],
+                    generated_code=code,
                     run_count=run_count,
                 )
             except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
@@ -1390,11 +2056,16 @@ def grade(element_html, data):
         data["partial_scores"][attrs["name"]] = {
             "score": 0,
             "weight": attrs["weight"],
-            "feedback": "No SQL query was submitted.",
+            "feedback": "No generated code was submitted.",
         }
-        _log_event(trace_id, "grading_completed", correct=False, reason="empty_sql")
+        _log_event(trace_id, "grading_completed", correct=False, reason="empty_code")
         return
-    _log_event(trace_id, "student_sql_selected_for_grading", student_sql=code)
+    _log_event(
+        trace_id,
+        "student_code_selected_for_grading",
+        output_mode=attrs["output_mode"],
+        student_code=code,
+    )
     try:
         _, student_rows, student_truncated = _run_query(
             data,
@@ -1414,9 +2085,10 @@ def grade(element_html, data):
             "score": 1 if correct else 0,
             "weight": attrs["weight"],
             "feedback": (
-                "Your SQL returned the expected result."
+                "Your generated code returned the expected result."
                 if correct
-                else "Your SQL ran, but its result did not match the expected result."
+                else "Your generated code ran, but its result did not match the "
+                "expected result."
             ),
         }
         _log_event(
