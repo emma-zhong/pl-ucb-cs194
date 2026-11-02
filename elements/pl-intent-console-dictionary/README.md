@@ -66,7 +66,7 @@ A deployed PrairieLearn administrator must configure an equivalent server-level 
 
 1. Put each source CSV in the question's `serverFilesQuestion` directory.
 2. Add a database-schema JSON file describing every available SQL table.
-3. Add a canonical dictionary of accepted student phrases.
+3. Add a canonical dictionary defining the allowed operations and modifiers.
 4. Add an instructor intent specification describing how recognized operations map to SQL and when generation must fail.
 5. Add the element to `question.html`, and set the reference SQL named by `reference-name` in `server.py`.
 
@@ -144,35 +144,22 @@ The element validates the schema before generation and builds the model's SQL sc
 
 ## Canonical dictionary format
 
-Each entry must be an `operation` or a `modifier`, give one canonical phrase, and list example student phrases that map to it. The first model pass receives these mappings and the student's plan, identifies exact source spans, and returns the appropriate canonical phrases. This means instructors can adjust accepted wording by editing the mapping examples rather than changing server-side regular expressions. Clear ordinary-English paraphrases of the examples may also be mapped; the pass may not infer operations from the assignment, schema, or likely answer.
+Put each canonical phrase under `operations` or `modifiers` and define its meaning in one sentence. Instructors do not need to enumerate synonyms. The first model pass uses these definitions to identify explicit operations and modifiers in the student's plan, cites the exact source spans, and returns the appropriate canonical phrases. It may recognize any unambiguous ordinary-English wording that expresses a listed definition, but it may not infer operations from the assignment, schema, or likely answer.
 
 ```yaml
-normalizations:
-  - canonical: group rows by
-    kind: operation
-    phrases:
-      - for each unique
-      - for each
-  - canonical: compute sum of
-    kind: operation
-    phrases:
-      - sum their
-      - sum the
-  - canonical: filter where
-    kind: operation
-    phrases:
-      - filter again for
-      - filter for
-  - canonical: keep filtered rows
-    kind: modifier
-    phrases:
-      - keep those rows only
-      - keep those rows
+operations:
+  group rows by: Divide rows into groups using one or more explicitly named columns.
+  compute sum of: Add the values of an explicitly named column or expression.
+  filter where: Apply a condition to an explicitly named column or aggregate.
+
+modifiers:
+  greater than: Compare whether the left value is larger than the right value.
+  keep filtered rows: Confirm that the rows selected by the preceding filter are retained.
 ```
 
-Use an operation for wording that authorizes a SQL action, such as grouping, aggregation, filtering, sorting, limiting, or joining. Use a modifier only to refine a recognized operation. The server validates the first pass against the instructor's canonical entries, requires exact non-overlapping evidence from the student's plan, and requires at least one recognized operation before making the SQL-generation call. Unmatched wording is preserved as a possible argument or connector, but it cannot authorize another SQL operation, comparison, or sort direction.
+Use an operation for wording that authorizes a SQL action, such as grouping, aggregation, filtering, sorting, limiting, or joining. Use a modifier only to refine a recognized operation. Keep definitions distinct enough that one explicit phrase does not plausibly match several entries. The server validates the first pass against the instructor's canonical entries, requires exact non-overlapping evidence from the student's plan, and requires at least one recognized operation before making the SQL-generation call. Unmatched wording is preserved as a possible argument or connector, but it cannot authorize another SQL operation, comparison, or sort direction.
 
-For multi-table questions, include a canonical `join` operation and appropriate phrases if joins are allowed. The intent specification must require the student to provide both table names and the matching columns.
+For multi-table questions, include a canonical `join` operation if joins are allowed. The intent specification must require the student to provide both table names and the matching columns.
 
 ## Student plan requirements
 

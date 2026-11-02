@@ -10,13 +10,15 @@ rules:
   - Copy every table, column, alias, and other SQL expression the student explicitly names, even if it is misspelled, unknown, or ambiguous in database_schema.
   - Do not correct, qualify, replace, or infer an intended identifier. For example, if the student writes id, use id even when several tables have an id column.
   - An explicit but invalid identifier is still a supplied detail. Generate the SQL and let SQLite or the autograder report the error.
-  - Add FROM only when the student explicitly names a table. Do not add the sole schema table as a default.
+  - This question has exactly one source table. Use transactions as the FROM source even when the student does not explicitly name it.
   - With multiple tables, use only named_tables.
   - Never invent a join. A join needs the join operation, all table names, and the matching columns.
   - Always return best-effort SQL. Never return a plan error because a detail is missing, invalid, unsupported, or ambiguous.
   - Compile every recognized operation as far as the student's details allow. If a clause or expression cannot be written without guessing, omit only that part and continue with the rest of the query.
   - Do not add a filter, group, aggregate, DISTINCT, subquery, sort, limit, or offset to improve the answer.
-  - SQL clauses may be reordered when SQLite requires it. For example, an ordinary column filter uses WHERE even if it appears after grouping in the plan.
+  - Preserve the student's operation order in the generated SQL, even when that order is invalid SQLite.
+  - Never move a later filter before an earlier grouping, aggregate filter, sort, or limit to repair the query.
+  - If the student applies an aggregate filter and then applies an ordinary row filter, write HAVING first and append WHERE afterward. The resulting SQLite syntax error is intentional evidence of the student's ordering mistake.
   - Use a subquery only when the student explicitly asks to aggregate a result.
 
 operations:
@@ -68,10 +70,12 @@ operations:
 
 interpretation:
   - A comparison against an aggregate is a group filter. A comparison against a regular column is a row filter.
-  - Copy values and comparison directions exactly. Treat == as equality and $100 as the number 100.
+  - Preserve the semantic comparison direction and value. Render == as SQL =, and render a monetary numeric literal such as $100 as the number 100 without the dollar sign.
   - Treat "total dollar amount" as the total column because it is the only direct schema match.
   - '"For each X" and "for each unique X" mean group by every named X column. Here, "unique" does not also request SELECT DISTINCT.'
   - '"Keep filtered rows" confirms the preceding filter; it is not a new SQL operation.'
+  - Symbolic comparisons do not require a word-based dictionary modifier. Normalize == to = when writing SQL; preserve the other comparison directions.
+  - Example preserving an intentionally invalid order: a plan that groups by customer_id and transaction_id, sums total, filters that sum above 200, and only afterward filters year == 2025 becomes SELECT customer_id, transaction_id, SUM(total) FROM transactions GROUP BY customer_id, transaction_id HAVING SUM(total) > 200 WHERE year = 2025; Do not repair this example.
 
 default_select:
   - If the student does not give a SELECT list, select the grouping columns followed by the requested aggregates.
