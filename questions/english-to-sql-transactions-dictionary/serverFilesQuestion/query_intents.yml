@@ -24,7 +24,7 @@ rules:
 interpretation:
   - A comparison against an aggregate is a group filter. A comparison against a regular column is a row filter.
   - Preserve the semantic comparison direction and value. Render == as SQL =, and render a monetary numeric literal such as $100 as the number 100 without the dollar sign.
-  - Treat "total dollar amount" as the total column because it is the only direct schema match.
+  - When the student uses an ordinary-language field description instead of an exact identifier, map it to a schema column only when exactly one column name or schema description is a direct, unambiguous match. Otherwise, preserve the student's wording rather than guessing.
   - '"For each X" and "for each unique X" mean group by every named X column. Here, "unique" does not also request SELECT DISTINCT.'
   - '"Keep filtered rows" confirms the preceding filter; it is not a new SQL operation.'
   - Symbolic comparisons do not require a word-based dictionary modifier. Normalize == to = when writing SQL; preserve the other comparison directions.
