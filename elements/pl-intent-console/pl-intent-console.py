@@ -16,6 +16,7 @@ DEFAULT_ROW_LIMIT = 20
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_RUNS = 10
 MAX_GRADE_ROWS = 10000
+MAX_MODEL_RESPONSE_BYTES = 2_000_000
 LOG_PREFIX = "pl-intent-console"
 LOG_FILE = os.environ.get(
     "ENGLISH_TO_SQL_LOG_FILE", "/tmp/pl-intent-console.log"
@@ -134,7 +135,6 @@ def _attributes(element_html):
     element = lxml.html.fragment_fromstring(element_html)
     name = pl.get_string_attrib(element, "answers-name")
     return {
-        "element": element,
         "name": name,
         "source_name": f"{name}-source",
         "code_name": f"{name}-generated-code",
@@ -195,7 +195,7 @@ def _load_preview(data, attrs):
     try:
         columns = json.loads(_answer(data, attrs["schema_name"], "[]"))
         rows = json.loads(_answer(data, attrs["preview_name"], "[]"))
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError):
         return [], []
     return columns, rows
 
@@ -397,9 +397,9 @@ def _load_database_schema(data, attrs):
     return tables
 
 
-def _schema_text(data, attrs):
+def _schema_text(tables):
     statements = []
-    for table in _load_database_schema(data, attrs):
+    for table in tables:
         definitions = []
         for column in table["columns"]:
             definition = (
@@ -648,26 +648,11 @@ def _table_context(student_source, tables, trace_id=None):
         r"\b(?:join|combine|merge)\b", student_source, flags=re.IGNORECASE
     )
     if len(tables) > 1 and requests_join and len(named_tables) < 2:
-        raise ValueError(
-            "Name every table participating in the join."
-        )
+        raise ValueError("Name every table participating in the join.")
     return named_tables
 
 
-def _generate_sql(data, attrs, student_source, trace_id=None):
-    _screen_student_input(student_source, trace_id)
-    tables = _load_database_schema(data, attrs)
-    named_tables = _table_context(student_source, tables, trace_id)
-    api_key = os.environ.get("ENGLISH_TO_SQL_API_KEY")
-    api_url = os.environ.get(
-        "ENGLISH_TO_SQL_API_URL", "https://api.openai.com/v1/chat/completions"
-    )
-    model = os.environ.get("ENGLISH_TO_SQL_MODEL")
-    if not api_key or not model:
-        raise RuntimeError(
-            "The server must set ENGLISH_TO_SQL_API_KEY and ENGLISH_TO_SQL_MODEL."
-        )
-
+def _model_prompts(data, attrs, tables, student_source, named_tables):
     intent_spec = _read_question_file(data, attrs["intent_spec"])
     system_prompt = f"""ROLE
 You are a grounded translator from a student's specific English analysis plan to SQLite.
@@ -688,20 +673,31 @@ INSTRUCTOR SPECIFICATION
 
 RESPONSE
 Return only the SQL statement or PLAN_ERROR reason required by the specification."""
-    user_prompt = json.dumps(
-        {
-            "database_schema": _schema_text(data, attrs),
-            "named_tables": named_tables,
-            "student_plan": student_source,
-        },
-        ensure_ascii=False,
+    user_payload = {
+        "database_schema": _schema_text(tables),
+        "named_tables": named_tables,
+        "student_plan": student_source,
+    }
+    return system_prompt, user_payload
+
+
+def _request_model_text(system_prompt, user_payload, trace_id=None):
+    api_key = os.environ.get("ENGLISH_TO_SQL_API_KEY")
+    api_url = os.environ.get(
+        "ENGLISH_TO_SQL_API_URL", "https://api.openai.com/v1/chat/completions"
     )
+    model = os.environ.get("ENGLISH_TO_SQL_MODEL")
+    if not api_key or not model:
+        raise RuntimeError(
+            "The server must set ENGLISH_TO_SQL_API_KEY and ENGLISH_TO_SQL_MODEL."
+        )
+
     if trace_id:
         _log_event(
             trace_id,
             "model_request_prepared",
             model=model,
-            processed_student_request=json.loads(user_prompt),
+            processed_student_request=user_payload,
             system_prompt_included=True,
             instructor_specification_included=True,
         )
@@ -711,7 +707,10 @@ Return only the SQL statement or PLAN_ERROR reason required by the specification
             "temperature": 0,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(user_payload, ensure_ascii=False),
+                },
             ],
         }
     ).encode("utf-8")
@@ -729,7 +728,7 @@ Return only the SQL statement or PLAN_ERROR reason required by the specification
         _log_event(trace_id, "model_request_started", timeout_seconds=timeout)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            response_bytes = response.read(2_000_001)
+            response_bytes = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
         if trace_id:
             _log_event(trace_id, "model_request_failed", failure="http", status=exc.code)
@@ -741,7 +740,7 @@ Return only the SQL statement or PLAN_ERROR reason required by the specification
             "The SQL generation service could not be reached. Try Save again later; "
             "this attempt was not counted against the generation limit."
         ) from exc
-    if len(response_bytes) > 2_000_000:
+    if len(response_bytes) > MAX_MODEL_RESPONSE_BYTES:
         if trace_id:
             _log_event(trace_id, "model_request_failed", failure="response_too_large")
         raise RuntimeError(
@@ -759,14 +758,28 @@ Return only the SQL statement or PLAN_ERROR reason required by the specification
         ) from exc
     if trace_id:
         _log_event(trace_id, "model_request_completed", response_bytes=len(response_bytes))
-    return _clean_sql(_extract_model_text(payload), trace_id)
+    return _extract_model_text(payload)
+
+
+def _generate_sql(data, attrs, tables, student_source, trace_id=None):
+    _screen_student_input(student_source, trace_id)
+    named_tables = _table_context(student_source, tables, trace_id)
+    system_prompt, user_payload = _model_prompts(
+        data,
+        attrs,
+        tables,
+        student_source,
+        named_tables,
+    )
+    response_text = _request_model_text(system_prompt, user_payload, trace_id)
+    return _clean_sql(response_text, trace_id)
 
 
 def _quote_identifier(identifier):
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _database_for_schema(data, attrs):
+def _database_for_schema(tables):
     connection = sqlite3.connect(":memory:")
 
     def convert(value, sql_type):
@@ -778,7 +791,7 @@ def _database_for_schema(data, attrs):
             return float(value)
         return value
 
-    for table in _load_database_schema(data, attrs):
+    for table in tables:
         columns = table["columns"]
         types = table["types"]
         definitions = ", ".join(
@@ -799,7 +812,7 @@ def _database_for_schema(data, attrs):
     return connection
 
 
-def _run_query(data, attrs, sql, limit, trace_id=None, purpose="query"):
+def _run_query(tables, sql, limit, trace_id=None, purpose="query"):
     if trace_id:
         _log_event(
             trace_id,
@@ -811,7 +824,7 @@ def _run_query(data, attrs, sql, limit, trace_id=None, purpose="query"):
         if trace_id:
             _log_event(trace_id, "sql_execution_rejected", purpose=purpose, check="read_only")
         raise ValueError("Only SELECT queries are allowed.")
-    connection = _database_for_schema(data, attrs)
+    connection = _database_for_schema(tables)
     if hasattr(connection, "setlimit"):
         connection.setlimit(getattr(sqlite3, "SQLITE_LIMIT_LENGTH"), 1_000_000)
         connection.setlimit(getattr(sqlite3, "SQLITE_LIMIT_SQL_LENGTH"), 50_000)
@@ -843,19 +856,16 @@ def _run_query(data, attrs, sql, limit, trace_id=None, purpose="query"):
         rows = cursor.fetchmany(limit + 1)
         truncated = len(rows) > limit
         rows = rows[:limit]
-        display_rows = [
-            ["NULL" if value is None else str(value) for value in row] for row in rows
-        ]
         if trace_id:
             _log_event(
                 trace_id,
                 "sql_execution_completed",
                 purpose=purpose,
                 columns=columns,
-                returned_rows=len(display_rows),
+                returned_rows=len(rows),
                 truncated=truncated,
             )
-        return columns, display_rows, truncated
+        return columns, rows, truncated
     except sqlite3.Error as exc:
         if trace_id:
             _log_event(
@@ -867,6 +877,12 @@ def _run_query(data, attrs, sql, limit, trace_id=None, purpose="query"):
         raise ValueError(f"SQL could not be executed: {exc}") from exc
     finally:
         connection.close()
+
+
+def _display_rows(rows):
+    return [
+        ["NULL" if value is None else str(value) for value in row] for row in rows
+    ]
 
 
 def parse(element_html, data):
@@ -881,6 +897,7 @@ def parse(element_html, data):
         run_count = 0
 
     action = "save" if generate else "save_and_grade"
+    tables = None
     _log_event(
         trace_id,
         "submission_received",
@@ -905,7 +922,8 @@ def parse(element_html, data):
             _log_event(trace_id, "generation_skipped", reason="generation_limit")
         else:
             try:
-                code = _generate_sql(data, attrs, source, trace_id)
+                tables = _load_database_schema(data, attrs)
+                code = _generate_sql(data, attrs, tables, source, trace_id)
                 run_count += 1
                 _log_event(
                     trace_id,
@@ -913,7 +931,7 @@ def parse(element_html, data):
                     generated_sql=code,
                     run_count=run_count,
                 )
-            except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            except (RuntimeError, ValueError) as exc:
                 data["format_errors"][attrs["name"]] = str(exc)
                 _log_event(trace_id, "generation_failed", error=str(exc))
     else:
@@ -927,14 +945,16 @@ def parse(element_html, data):
     rows = []
     if code and attrs["name"] not in data["format_errors"]:
         try:
-            columns, rows, truncated = _run_query(
-                data,
-                attrs,
+            if tables is None:
+                tables = _load_database_schema(data, attrs)
+            columns, result_rows, truncated = _run_query(
+                tables,
                 code,
                 attrs["row_limit"],
                 trace_id,
                 "preview",
             )
+            rows = _display_rows(result_rows)
             if truncated:
                 rows.append(
                     [f"Preview limited to {attrs['row_limit']} rows."]
@@ -985,11 +1005,16 @@ def grade(element_html, data):
         return
     _log_event(trace_id, "student_sql_selected_for_grading", student_sql=code)
     try:
+        tables = _load_database_schema(data, attrs)
         _, student_rows, student_truncated = _run_query(
-            data, attrs, code, MAX_GRADE_ROWS, trace_id, "student_grading"
+            tables, code, MAX_GRADE_ROWS, trace_id, "student_grading"
         )
         _, reference_rows, reference_truncated = _run_query(
-            data, attrs, str(pl.from_json(reference)), MAX_GRADE_ROWS
+            tables,
+            str(pl.from_json(reference)),
+            MAX_GRADE_ROWS,
+            trace_id,
+            "reference_grading",
         )
         if student_truncated or reference_truncated:
             raise ValueError("The grading result exceeded the configured safety limit.")
