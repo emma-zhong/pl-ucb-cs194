@@ -143,6 +143,12 @@
       "description": "This question was originally written by Dan Garcia (ddgarcia@berkeley.edu)",
       "author": true
     },
+    {
+      "name": "course-staff",
+      "color": "brown2",
+      "description": "This question was written by the CS 194 course staff.",
+      "author": true
+    },
 
     {
       "name": "berkeley",
