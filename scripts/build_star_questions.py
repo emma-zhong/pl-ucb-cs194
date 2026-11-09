@@ -23,9 +23,13 @@ QUESTIONS = {
     "english-to-sql-transactions-dictionary": "pl-intent-console-dictionary",
     "english-to-sql-transactions-regen": "pl-intent-console-regen",
     "english-to-sql-transactions-two-pass": "pl-intent-console-two-pass",
+    "cook-county-neighborhood-rank-english": "pl-intent-console-dictionary",
+    "cook-county-neighborhood-rank-sql": "pl-sql-console",
 }
 LIFECYCLE = ("prepare", "render", "parse", "grade")
 TEMPLATE_OPEN = 'with open(TEMPLATE_FILE, encoding="utf-8") as file:'
+# Holds the proxy token; never copy it into the STAR repository.
+SKIPPED_SERVER_FILES = ("llm_config.json",)
 
 WRAPPERS = '''
 
@@ -99,8 +103,12 @@ def inline_element(element):
 def question_generate(question):
     source = read(os.path.join(REPO, "questions", question, "server.py"))
     tree = ast.parse(source)
-    if [type(node) for node in tree.body] != [ast.FunctionDef] or tree.body[0].name != "generate":
-        raise SystemExit(f"{question}/server.py should contain only generate()")
+    if not all(isinstance(node, (ast.FunctionDef, ast.Assign)) for node in tree.body):
+        raise SystemExit(f"{question}/server.py should contain only functions and constants")
+    if "generate" not in {
+        node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+    }:
+        raise SystemExit(f"{question}/server.py should define generate()")
     return source.strip()
 
 
@@ -124,11 +132,23 @@ def build(question, element, star_root):
     ast.parse(server)
     write(os.path.join(target, "server.py"), server)
 
-    console = (
-        f'<link rel="stylesheet" href="{{{{options.client_files_question_url}}}}/{element}.css">\n'
+    element_dir = os.path.join(REPO, "elements", element)
+    client_files = [
+        f"{element}.{extension}"
+        for extension in ("js", "css")
+        if os.path.exists(os.path.join(element_dir, f"{element}.{extension}"))
+    ]
+    script = (
         "<pl-question-panel>\n"
         f'  <script src="{{{{options.client_files_question_url}}}}/{element}.js"></script>\n'
-        "</pl-question-panel>\n\n"
+        "</pl-question-panel>\n"
+        if f"{element}.js" in client_files
+        else ""
+    )
+    console = (
+        f'<link rel="stylesheet" href="{{{{options.client_files_question_url}}}}/{element}.css">\n'
+        + script
+        + "\n"
         "<!-- Replaced by server.py render() with the intent console for the current panel.\n"
         "     The element's settings live in ELEMENT_HTML in server.py. -->\n"
         "<div data-pl-intent-console-placeholder></div>"
@@ -140,9 +160,7 @@ def build(question, element, star_root):
 
     for folder in ("clientFilesQuestion", "serverFilesQuestion"):
         shutil.rmtree(os.path.join(target, folder), ignore_errors=True)
-    element_dir = os.path.join(REPO, "elements", element)
-    for extension in ("js", "css"):
-        name = f"{element}.{extension}"
+    for name in client_files:
         os.makedirs(os.path.join(target, "clientFilesQuestion"), exist_ok=True)
         shutil.copyfile(
             os.path.join(element_dir, name),
@@ -151,6 +169,7 @@ def build(question, element, star_root):
     shutil.copytree(
         os.path.join(source_dir, "serverFilesQuestion"),
         os.path.join(target, "serverFilesQuestion"),
+        ignore=shutil.ignore_patterns(*SKIPPED_SERVER_FILES),
     )
     shutil.copyfile(
         os.path.join(element_dir, f"{element}.mustache"),
