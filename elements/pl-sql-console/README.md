@@ -11,6 +11,7 @@ grades result rows on **Save & Grade**.
   database-schema="database_schema.json"
   reference-name="reference_sql"
   row-limit="20"
+  time-limit-minutes="12"
   weight="1">
 </pl-sql-console>
 ```
@@ -23,3 +24,9 @@ The element accepts read-only queries only. SQLite authorizer callbacks deny
 writes and non-query operations, and SQL length, result size, input row, column,
 and instruction limits constrain execution. Grading compares row values and
 multiplicity while ignoring row order and column labels.
+
+When `time-limit-minutes` is positive, the element shows an advisory countdown
+and stores elapsed time, Save and Save & Grade counts, editor input-event counts,
+and inserted/deleted character totals as hidden submitted answers. For the
+direct-SQL condition, Save counts are ordinary previews rather than code
+generations; the Save & Grade count is the study's answer-attempt count.

@@ -218,9 +218,32 @@ The element stores the student's English under `<answers-name>-source` and gener
 
 - **Save** maps and normalizes the plan, generates code in the configured output mode, overwrites prior code, and refreshes the preview.
 - **Save & Grade** preserves and grades the code currently visible in the editor; it does not regenerate code.
-- A failed local check, provider request, or model-output check preserves the previous code and does not increment the generation count.
+- A failed local check, provider request, or model-output check preserves the previous code and does not increment the successful-generation limit. Study telemetry still counts every Save press as a generation attempt.
 
 In SQL mode, student and reference queries run against all configured tables in one restricted, in-memory SQLite database, and only read-only `SELECT` or `WITH` queries are accepted. In pandas and Polars modes, CSV-backed DataFrames execute through a restricted AST interpreter: imports, arbitrary functions and methods, callbacks, lambdas, comprehensions, private attributes, cross joins, file access, and network access are rejected. Input, join, syntax-tree, and intermediate-result limits constrain execution. Grading compares result rows and multiplicity rather than exact code; row order and column labels are ignored.
+
+## Study telemetry and question timer
+
+Set `time-limit-minutes` to show a per-question countdown and store elapsed time
+with each PrairieLearn submission. The timer is advisory: after it reaches zero,
+the participant is told to finish the current submission and move on.
+
+The element stores the following hidden answers under the configured
+`answers-name`, so they appear in PrairieLearn's submission history and
+`*_all_submissions.csv` download:
+
+- `telemetry-started-at-ms` and `telemetry-elapsed-ms`;
+- `telemetry-save-count`, where every Save press is one generation attempt;
+- `telemetry-grade-count`, where every Save & Grade press is one answer attempt;
+- `telemetry-generation-failure-count`;
+- `telemetry-edit-count`, `telemetry-chars-inserted`, and
+  `telemetry-chars-deleted` for manual changes to the generated-code editor.
+
+PrairieLearn's submission score and timestamp can be combined with these fields
+to identify the first correct answer, time to correctness, and whether the answer
+arrived within the configured limit. The client-side edit counts describe edits
+that occurred before a submission; edits abandoned without submitting cannot be
+recovered.
 
 ## Server-side diagnostics
 
@@ -232,7 +255,7 @@ submission.
 
 The log covers input screening, table filtering, both model requests and outputs, the
 dictionary-normalized plan and replacements, recognized operations and modifiers, generated
-code, preview execution, and grading. Each event has a `trace_id`; parse events for one button
+code, preview execution, and grading. Events include a UTC timestamp. Each event has a `trace_id`; parse events for one button
 press share one ID, while grading uses its own ID.
 
 The log omits API credentials, authorization headers, system prompts, reference code, and
