@@ -16,6 +16,12 @@
       "title": "SQL tasks",
       "questions": [
         {
+          "id": "english-to-sql-transactions-dictionary-tutorial",
+          "points": 10,
+          "triesPerVariant": 99999,
+          "maxPoints": 10
+        },
+        {
           "id": "cook-county-neighborhood-rank-sql",
           "points": 10,
           "triesPerVariant": 99999,
