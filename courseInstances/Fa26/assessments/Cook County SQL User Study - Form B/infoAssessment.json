@@ -1,0 +1,35 @@
+{
+  "uuid": "F5E68B6C-08B9-4D56-B8D6-0D9911EF205C",
+  "type": "Homework",
+  "title": "Cook County SQL User Study (Form B)",
+  "set": "Homework",
+  "number": "1B",
+  "shuffleQuestions": false,
+  "allowAccess": [
+    {
+      "startDate": "2026-01-01T00:00:01",
+      "endDate": "2027-12-31T23:59:59"
+    }
+  ],
+  "zones": [
+    {
+      "title": "SQL tasks",
+      "questions": [
+        {
+          "id": "cook-county-neighborhood-rank-sql",
+          "points": 10,
+          "triesPerVariant": 99999,
+          "maxPoints": 10,
+          "preferences": {"problem_variant": "task_b"}
+        },
+        {
+          "id": "cook-county-neighborhood-rank-english",
+          "points": 10,
+          "triesPerVariant": 99999,
+          "maxPoints": 10,
+          "preferences": {"problem_variant": "task_a"}
+        }
+      ]
+    }
+  ]
+}
