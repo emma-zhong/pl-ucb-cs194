@@ -25,6 +25,8 @@ QUESTIONS = {
     "english-to-sql-transactions-two-pass": "pl-intent-console-two-pass",
     "cook-county-neighborhood-rank-english": "pl-intent-console-dictionary",
     "cook-county-neighborhood-rank-sql": "pl-sql-console",
+    "english-to-sql-top-customers-dictionary": "pl-intent-console-dictionary",
+    "english-to-pandas-top-customers-dictionary": "pl-intent-console-dictionary",
 }
 LIFECYCLE = ("prepare", "render", "parse", "grade")
 TEMPLATE_OPEN = 'with open(TEMPLATE_FILE, encoding="utf-8") as file:'
