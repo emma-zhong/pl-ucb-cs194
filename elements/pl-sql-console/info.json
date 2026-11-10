@@ -1,0 +1,11 @@
+{
+  "controller": "pl-sql-console.py",
+  "dependencies": {
+    "elementScripts": [
+      "pl-sql-console.js"
+    ],
+    "elementStyles": [
+      "pl-sql-console.css"
+    ]
+  }
+}

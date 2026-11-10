@@ -1,5 +1,6 @@
 import ast
 import csv
+import datetime
 import json
 import keyword
 import math
@@ -239,7 +240,8 @@ def _append_log_field(lines, prefix, name, value, indentation=2):
 def _log_event(trace_id, event, **fields):
     """Write readable diagnostics without touching the parse process console."""
     prefix = f"{LOG_PREFIX} [{trace_id}]"
-    lines = [f"{prefix} {_log_label(event)}"]
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    lines = [f"{prefix} {_log_label(event)}", f"{prefix}  Timestamp: {timestamp}"]
     for name, value in fields.items():
         _append_log_field(lines, prefix, name, value)
     message = ("\n".join(lines) + "\n").encode("utf-8")
@@ -275,6 +277,14 @@ def _attributes(element_html):
         "preview_name": f"{name}-result-preview",
         "runs_name": f"{name}-run-count",
         "generate_name": f"{name}-generate-on-submit",
+        "started_name": f"{name}-telemetry-started-at-ms",
+        "elapsed_name": f"{name}-telemetry-elapsed-ms",
+        "save_count_name": f"{name}-telemetry-save-count",
+        "grade_count_name": f"{name}-telemetry-grade-count",
+        "failure_count_name": f"{name}-telemetry-generation-failure-count",
+        "edit_count_name": f"{name}-telemetry-edit-count",
+        "inserted_count_name": f"{name}-telemetry-chars-inserted",
+        "deleted_count_name": f"{name}-telemetry-chars-deleted",
         "data_source": pl.get_string_attrib(element, "data-source", None),
         "database_schema": pl.get_string_attrib(
             element, "database-schema", None
@@ -287,6 +297,9 @@ def _attributes(element_html):
         "editable": pl.get_boolean_attrib(element, "generated-code-editable", False),
         "row_limit": pl.get_integer_attrib(element, "row-limit", DEFAULT_ROW_LIMIT),
         "max_runs": pl.get_integer_attrib(element, "max-runs", DEFAULT_MAX_RUNS),
+        "time_limit_minutes": pl.get_integer_attrib(
+            element, "time-limit-minutes", 0
+        ),
         "weight": pl.get_integer_attrib(element, "weight", 1),
         "input_label": pl.get_string_attrib(
             element, "input-label", "Describe your analysis plan in English"
@@ -328,6 +341,13 @@ def _write_answer(data, name, value):
     data["submitted_answers"][name] = pl.to_json(value)
 
 
+def _nonnegative_int_answer(data, name):
+    try:
+        return max(0, int(_answer(data, name, "0")))
+    except ValueError:
+        return 0
+
+
 def _load_preview(data, attrs):
     try:
         columns = json.loads(_answer(data, attrs["schema_name"], "[]"))
@@ -360,6 +380,8 @@ def prepare(element_html, data):
         )
     if attrs["row_limit"] <= 0 or attrs["max_runs"] <= 0:
         raise ValueError("row-limit and max-runs must both be positive.")
+    if attrs["time_limit_minutes"] < 0:
+        raise ValueError("time-limit-minutes must be nonnegative.")
 
     if bool(attrs["data_source"]) == bool(attrs["database_schema"]):
         raise ValueError(
@@ -402,6 +424,25 @@ def render(element_html, data):
         "source": source,
         "code": code,
         "run_count": _answer(data, attrs["runs_name"], "0"),
+        "started_name": attrs["started_name"],
+        "elapsed_name": attrs["elapsed_name"],
+        "save_count_name": attrs["save_count_name"],
+        "grade_count_name": attrs["grade_count_name"],
+        "failure_count_name": attrs["failure_count_name"],
+        "edit_count_name": attrs["edit_count_name"],
+        "inserted_count_name": attrs["inserted_count_name"],
+        "deleted_count_name": attrs["deleted_count_name"],
+        "started_at_ms": _answer(data, attrs["started_name"], "0"),
+        "elapsed_ms": _answer(data, attrs["elapsed_name"], "0"),
+        "save_count": _answer(data, attrs["save_count_name"], "0"),
+        "grade_count": _answer(data, attrs["grade_count_name"], "0"),
+        "failure_count": _answer(data, attrs["failure_count_name"], "0"),
+        "edit_count": _answer(data, attrs["edit_count_name"], "0"),
+        "inserted_count": _answer(data, attrs["inserted_count_name"], "0"),
+        "deleted_count": _answer(data, attrs["deleted_count_name"], "0"),
+        "has_time_limit": attrs["time_limit_minutes"] > 0,
+        "time_limit_minutes": attrs["time_limit_minutes"],
+        "time_limit_seconds": attrs["time_limit_minutes"] * 60,
         "input_label": attrs["input_label"],
         "code_label": attrs["code_label"],
         "code_placeholder": attrs["code_placeholder"],
@@ -1960,10 +2001,20 @@ def parse(element_html, data):
     source = _answer(data, attrs["source_name"]).strip()
     code = _answer(data, attrs["code_name"]).strip()
     generate = _answer(data, attrs["generate_name"], "1") != "0"
-    try:
-        run_count = int(_answer(data, attrs["runs_name"], "0"))
-    except ValueError:
-        run_count = 0
+    run_count = _nonnegative_int_answer(data, attrs["runs_name"])
+    started_at_ms = _nonnegative_int_answer(data, attrs["started_name"])
+    elapsed_ms = _nonnegative_int_answer(data, attrs["elapsed_name"])
+    save_count = _nonnegative_int_answer(data, attrs["save_count_name"])
+    grade_count = _nonnegative_int_answer(data, attrs["grade_count_name"])
+    failure_count = _nonnegative_int_answer(data, attrs["failure_count_name"])
+    edit_count = _nonnegative_int_answer(data, attrs["edit_count_name"])
+    inserted_count = _nonnegative_int_answer(data, attrs["inserted_count_name"])
+    deleted_count = _nonnegative_int_answer(data, attrs["deleted_count_name"])
+
+    if generate:
+        save_count += 1
+    else:
+        grade_count += 1
 
     action = "save" if generate else "save_and_grade"
     _log_event(
@@ -1973,6 +2024,15 @@ def parse(element_html, data):
         answers_name=attrs["name"],
         run_count=run_count,
         max_runs=attrs["max_runs"],
+        variant_seed=data.get("variant_seed"),
+        elapsed_ms=elapsed_ms,
+        time_limit_minutes=attrs["time_limit_minutes"],
+        save_count=save_count,
+        grade_count=grade_count,
+        generation_failure_count=failure_count,
+        edit_count=edit_count,
+        chars_inserted=inserted_count,
+        chars_deleted=deleted_count,
         student_plan=source,
         output_mode=attrs["output_mode"],
         editor_code=code,
@@ -2001,8 +2061,14 @@ def parse(element_html, data):
                     run_count=run_count,
                 )
             except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+                failure_count += 1
                 data["format_errors"][attrs["name"]] = str(exc)
-                _log_event(trace_id, "generation_failed", error=str(exc))
+                _log_event(
+                    trace_id,
+                    "generation_failed",
+                    error=str(exc),
+                    generation_failure_count=failure_count,
+                )
     else:
         _log_event(
             trace_id,
@@ -2028,19 +2094,38 @@ def parse(element_html, data):
                     + [""] * (len(columns) - 1)
                 )
         except ValueError as exc:
+            if generate:
+                failure_count += 1
             data["format_errors"][attrs["name"]] = str(exc)
-            _log_event(trace_id, "preview_failed", error=str(exc))
+            _log_event(
+                trace_id,
+                "preview_failed",
+                error=str(exc),
+                generation_failure_count=failure_count,
+            )
 
     _write_answer(data, attrs["source_name"], source)
     _write_answer(data, attrs["code_name"], code)
     _write_answer(data, attrs["schema_name"], json.dumps(columns))
     _write_answer(data, attrs["preview_name"], json.dumps(rows))
     _write_answer(data, attrs["runs_name"], str(run_count))
+    _write_answer(data, attrs["started_name"], str(started_at_ms))
+    _write_answer(data, attrs["elapsed_name"], str(elapsed_ms))
+    _write_answer(data, attrs["save_count_name"], str(save_count))
+    _write_answer(data, attrs["grade_count_name"], str(grade_count))
+    _write_answer(data, attrs["failure_count_name"], str(failure_count))
+    _write_answer(data, attrs["edit_count_name"], str(edit_count))
+    _write_answer(data, attrs["inserted_count_name"], str(inserted_count))
+    _write_answer(data, attrs["deleted_count_name"], str(deleted_count))
     _log_event(
         trace_id,
         "parse_completed",
         action=action,
         run_count=run_count,
+        save_count=save_count,
+        grade_count=grade_count,
+        generation_failure_count=failure_count,
+        elapsed_ms=elapsed_ms,
         has_format_error=attrs["name"] in data["format_errors"],
         preview_rows=len(rows),
     )
@@ -2053,7 +2138,20 @@ def _canonical_rows(rows):
 def grade(element_html, data):
     attrs = _attributes(element_html)
     trace_id = _new_trace_id()
-    _log_event(trace_id, "grading_started", answers_name=attrs["name"])
+    elapsed_ms = _nonnegative_int_answer(data, attrs["elapsed_name"])
+    time_limit_ms = attrs["time_limit_minutes"] * 60 * 1000
+    within_time_limit = time_limit_ms == 0 or elapsed_ms <= time_limit_ms
+    grade_count = _nonnegative_int_answer(data, attrs["grade_count_name"])
+    _log_event(
+        trace_id,
+        "grading_started",
+        answers_name=attrs["name"],
+        variant_seed=data.get("variant_seed"),
+        elapsed_ms=elapsed_ms,
+        time_limit_minutes=attrs["time_limit_minutes"],
+        within_time_limit=within_time_limit,
+        grade_count=grade_count,
+    )
     if attrs["reference_name"] is None or attrs["name"] in data["format_errors"]:
         _log_event(trace_id, "grading_skipped", reason="not_configured_or_format_error")
         return
@@ -2105,6 +2203,9 @@ def grade(element_html, data):
             trace_id,
             "grading_completed",
             correct=correct,
+            elapsed_ms=elapsed_ms,
+            within_time_limit=within_time_limit,
+            grade_count=grade_count,
             student_row_count=len(student_rows),
         )
     except ValueError as exc:

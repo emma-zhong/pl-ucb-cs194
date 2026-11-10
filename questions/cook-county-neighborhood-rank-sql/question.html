@@ -1,0 +1,89 @@
+<pl-question-panel>
+  <h3>Cook County property sales SQL query</h3>
+  <p>Consider a <code>cook_county</code> dataset with the following columns:</p>
+
+  <div class="table-responsive">
+    <table class="table table-bordered">
+      <thead>
+        <tr><th scope="col">Column</th><th scope="col">Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>property_id</code></td><td>a Cook County parcel identifier</td></tr>
+        <tr><td><code>property_class</code></td><td>the assessor's property-class code</td></tr>
+        <tr><td><code>neighborhood_code</code></td><td>the assessor's neighborhood code</td></tr>
+        <tr><td><code>building_sqft</code></td><td>the building area in square feet</td></tr>
+        <tr><td><code>sale_price</code></td><td>the recorded sale price in dollars</td></tr>
+        <tr><td><code>modeling_group</code></td><td>the modeling category: <code>SF</code>, <code>MF</code>, or <code>NCHARS</code></td></tr>
+        <tr><td><code>sale_year</code></td><td>the year of the sale</td></tr>
+        <tr><td><code>garage_indicator</code></td><td><code>1</code> when a garage is present and <code>0</code> otherwise</td></tr>
+        <tr><td><code>central_air</code></td><td><code>1</code> when central air is present and <code>0</code> otherwise</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Each row of the dataset represents one property sale.</p>
+  <div class="alert alert-secondary">
+    <strong>Note:</strong> For this question, a valid sale has
+    <code>modeling_group = 'SF'</code>, <code>sale_price &gt;= 10000</code>, and
+    <code>building_sqft &gt; 0</code>.
+  </div>
+
+  {{#params.task_a}}
+    <h4>(a) Neighborhood price leaderboard</h4>
+    <p>
+      For each year from 2016 through 2019, find the three neighborhoods with the
+      highest average sale price per building square foot. Only use valid sales
+      that have a garage.
+    </p>
+    <p>Use the following definitions:</p>
+    <ul>
+      <li>For one sale, <code>price_per_sqft = sale_price * 1.0 / building_sqft</code>.</li>
+      <li>A neighborhood qualifies in a given year only if it has at least 10 qualifying sales in that year.</li>
+      <li><code>sale_count</code> is the number of qualifying sales for a neighborhood in a given year.</li>
+      <li><code>avg_price_per_sqft</code> is the average <code>price_per_sqft</code> for a neighborhood in a given year, rounded to two decimal places.</li>
+    </ul>
+    <p>
+      Rank qualifying neighborhoods separately within each year by
+      <code>avg_price_per_sqft</code> from highest to lowest. Break ties by
+      <code>neighborhood_code</code> from lowest to highest, and keep ranks 1 through 3.
+    </p>
+    <p>
+      Return a table with exactly these columns:
+      <code>sale_year</code>, <code>neighborhood_code</code>, <code>sale_count</code>,
+      <code>avg_price_per_sqft</code>, and <code>rank_in_year</code>.
+    </p>
+  {{/params.task_a}}
+
+  {{#params.task_b}}
+    <h4>(b) Busiest years by property class</h4>
+    <p>
+      For each <code>property_class</code>, find the two years from 2013 through
+      2019 with the most valid sales that have central air.
+    </p>
+    <p>Use the following definitions:</p>
+    <ul>
+      <li>A property class qualifies in a given year only if it has at least 25 qualifying sales in that year.</li>
+      <li><code>sale_count</code> is the number of qualifying sales for a property class in a given year.</li>
+      <li><code>avg_sale_price</code> is the average <code>sale_price</code> for a property class in a given year, rounded to two decimal places.</li>
+    </ul>
+    <p>
+      Rank qualifying years separately within each <code>property_class</code> by
+      <code>sale_count</code> from highest to lowest. Break ties by
+      <code>sale_year</code> from lowest to highest, and keep ranks 1 and 2.
+    </p>
+    <p>
+      Return a table with exactly these columns:
+      <code>property_class</code>, <code>sale_year</code>, <code>sale_count</code>,
+      <code>avg_sale_price</code>, and <code>rank_in_class</code>.
+    </p>
+  {{/params.task_b}}
+</pl-question-panel>
+
+<pl-sql-console
+  answers-name="cook_county_sql"
+  database-schema="database_schema.json"
+  reference-name="reference_sql"
+  row-limit="20"
+  time-limit-minutes="12"
+  weight="1">
+</pl-sql-console>
