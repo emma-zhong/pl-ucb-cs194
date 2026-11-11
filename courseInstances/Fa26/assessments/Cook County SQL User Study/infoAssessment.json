@@ -4,7 +4,7 @@
   "title": "Cook County SQL User Study (Form A)",
   "set": "Homework",
   "number": "1A",
-  "shuffleQuestions": false,
+  "shuffleQuestions": true,
   "allowAccess": [
     {
       "startDate": "2026-01-01T00:00:01",
@@ -13,14 +13,19 @@
   ],
   "zones": [
     {
-      "title": "SQL tasks",
+      "title": "Tutorial",
       "questions": [
         {
           "id": "english-to-sql-transactions-dictionary-tutorial",
           "points": 10,
           "triesPerVariant": 99999,
           "maxPoints": 10
-        },
+        }
+      ]
+    },
+    {
+      "title": "Study tasks",
+      "questions": [
         {
           "id": "cook-county-neighborhood-rank-sql",
           "points": 10,
