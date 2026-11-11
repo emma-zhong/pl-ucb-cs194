@@ -21,60 +21,36 @@
     </table>
   </div>
 
-  <p>Each row of the dataset represents one property sale.</p>
+  <p>
+    Each row represents one single-family property sale. The dataset contains
+    sales from 2013 through 2019.
+  </p>
   <div class="alert alert-secondary">
-    <strong>Note:</strong> For this question, a valid sale has
-    <code>modeling_group = 'SF'</code>, <code>sale_price &gt;= 10000</code>, and
-    <code>building_sqft &gt; 0</code>.
+    <strong>Note:</strong> A property class or neighborhood may appear in many rows.
   </div>
 
   {{#params.task_a}}
-    <h4>(a) Neighborhood price leaderboard</h4>
+    <h4>(a) Property classes with large garage-equipped homes</h4>
     <p>
-      For each year from 2016 through 2019, find the three neighborhoods with the
-      highest average sale price per building square foot. Only use valid sales
-      that have a garage.
-    </p>
-    <p>Use the following definitions:</p>
-    <ul>
-      <li>For one sale, <code>price_per_sqft = sale_price * 1.0 / building_sqft</code>.</li>
-      <li>A neighborhood qualifies in a given year only if it has at least 10 qualifying sales in that year.</li>
-      <li><code>sale_count</code> is the number of qualifying sales for a neighborhood in a given year.</li>
-      <li><code>avg_price_per_sqft</code> is the average <code>price_per_sqft</code> for a neighborhood in a given year, rounded to two decimal places.</li>
-    </ul>
-    <p>
-      Rank qualifying neighborhoods separately within each year by
-      <code>avg_price_per_sqft</code> from highest to lowest. Break ties by
-      <code>neighborhood_code</code> from lowest to highest, and keep ranks 1 through 3.
+      How many <code>property_class</code> values have at least 30 sales with a
+      garage and an average <code>building_sqft</code> greater than 2,500?
     </p>
     <p>
-      Return a table with exactly these columns:
-      <code>sale_year</code>, <code>neighborhood_code</code>, <code>sale_count</code>,
-      <code>avg_price_per_sqft</code>, and <code>rank_in_year</code>.
+      Return a one-row table with one column named
+      <code>property_class_count</code>.
     </p>
   {{/params.task_a}}
 
   {{#params.task_b}}
-    <h4>(b) Busiest years by property class</h4>
+    <h4>(b) High-value central-air neighborhoods</h4>
     <p>
-      For each <code>property_class</code>, find the two years from 2013 through
-      2019 with the most valid sales that have central air.
-    </p>
-    <p>Use the following definitions:</p>
-    <ul>
-      <li>A property class qualifies in a given year only if it has at least 25 qualifying sales in that year.</li>
-      <li><code>sale_count</code> is the number of qualifying sales for a property class in a given year.</li>
-      <li><code>avg_sale_price</code> is the average <code>sale_price</code> for a property class in a given year, rounded to two decimal places.</li>
-    </ul>
-    <p>
-      Rank qualifying years separately within each <code>property_class</code> by
-      <code>sale_count</code> from highest to lowest. Break ties by
-      <code>sale_year</code> from lowest to highest, and keep ranks 1 and 2.
+      How many <code>neighborhood_code</code> values have at least 30 sales with
+      central air and a combined <code>sale_price</code> greater than
+      $200,000,000?
     </p>
     <p>
-      Return a table with exactly these columns:
-      <code>property_class</code>, <code>sale_year</code>, <code>sale_count</code>,
-      <code>avg_sale_price</code>, and <code>rank_in_class</code>.
+      Return a one-row table with one column named
+      <code>neighborhood_count</code>.
     </p>
   {{/params.task_b}}
 </pl-question-panel>
