@@ -4,48 +4,49 @@
 
 This is a UC Berkeley CS 194 PrairieLearn course repository. The course is named **STAR Assessments for Mastery Learning** in `infoCourse.json`.
 
-The current development effort is a draft PrairieLearn custom element that acts as an **English-to-SQL console**:
+The current development effort is a draft PrairieLearn custom element that maps an English analysis plan through an instructor-authored canonical dictionary and generates **SQL, pandas, or Polars code**:
 
 1. A student writes an analysis plan in English.
-2. Clicking PrairieLearn's **Save** button sends the English plan, dataset schema, and instructor-authored generation rules to an external LLM.
-3. The returned SQL appears in an editable code area and a result preview is shown.
-4. A later **Save** intentionally regenerates SQL and overwrites student edits.
-5. **Save & Grade** must preserve and grade the SQL currently visible in the editor rather than regenerating it.
+2. Clicking PrairieLearn's **Save** button uses one LLM pass to map the plan to canonical operations and a second to generate code.
+3. The returned code appears in an editable area and a result preview is shown.
+4. A later **Save** intentionally regenerates code and overwrites student edits.
+5. **Save & Grade** must preserve and grade the code currently visible in the editor rather than regenerating it.
 
-The external model generates SQL, not Python or pandas code.
+The retired one-pass and two-pass SQL-only elements have been removed.
 
 ## Important files
 
 ### Custom element
 
-The draft custom element is in `elements/pl-intent-console/`:
+The draft custom element is in `elements/pl-intent-console-dictionary/`:
 
-- `pl-intent-console.py`: lifecycle, LLM request, CSV-to-SQLite loading, preview, and result-based grading.
-- `pl-intent-console.mustache`: question, submission, and answer panel markup.
-- `pl-intent-console.js`: distinguishes Save from Save & Grade using the submitting button.
-- `pl-intent-console.css`: console and preview styling.
+- `pl-intent-console-dictionary.py`: lifecycle, LLM requests, restricted execution, preview, grading, and telemetry.
+- `pl-intent-console-dictionary.mustache`: question, submission, and answer panel markup.
+- `pl-intent-console-dictionary.js`: Save/Save & Grade behavior, timer, and edit telemetry.
+- `pl-intent-console-dictionary.css`: console and preview styling.
 - `info.json`: PrairieLearn element registration and browser dependencies.
 - `README.md`: authoring and server configuration instructions.
 
 The element is intentionally a draft. Its currently supported contract is:
 
 - `input-modes="english"`
-- `output-mode="sql"`
+- `output-mode="sql"`, `"pandas"`, or `"polars"`
 - CSV files in the question's `serverFilesQuestion` directory
-- an instructor-authored intent specification stored in `serverFilesQuestion`
+- an instructor-authored database schema, canonical dictionary, and intent specification
 - an OpenAI-compatible chat-completions endpoint
 
-The LLM receives only:
+The mapping LLM receives only the canonical dictionary and student plan. The generation LLM receives only:
 
-- the schema inferred from the configured CSV;
+- the schema generated from the configured CSV files;
+- the selected output mode;
 - the instructor intent specification; and
-- the student's English plan.
+- the validated normalized plan and recognized operations/modifiers.
 
-Do not give the LLM the reference SQL, expected output, grading result, hidden tests, or original question text. The translator should preserve the student's expressed logic instead of repairing it from grading information.
+Do not give either LLM the reference code, expected output, grading result, hidden tests, or original question text. The translator should preserve the student's expressed logic instead of repairing it from grading information.
 
 ### Draft question
 
-The working example is `questions/english-to-sql-transactions/`.
+The primary study question is `questions/english-to-sql-transactions-dictionary-tutorial/`. Other examples cover SQL and pandas output in the sibling `*-dictionary` question directories.
 
 It uses only part (a) of the supplied transactions prompt:
 
@@ -53,9 +54,11 @@ It uses only part (a) of the supplied transactions prompt:
 
 Important question files:
 
-- `question.html`: transactions schema, analysis-plan instructions, and one `pl-intent-console`.
+- `question.html`: transactions schema, analysis-plan instructions, and one `pl-intent-console-dictionary`.
 - `server.py`: reference SQL used for result-based grading.
 - `serverFilesQuestion/transactions.csv`: sample data used for previews and grading.
+- `serverFilesQuestion/database_schema.json`: table and column configuration.
+- `serverFilesQuestion/canonical_dictionary.yml`: allowed operations and modifiers.
 - `serverFilesQuestion/query_intents.yml`: instructor instructions supplied to the LLM.
 
 The reference result for the bundled CSV is **6**. A common incorrect query that filters individual transactions above $200 returns **2**, so the dataset distinguishes row-level filtering from per-customer aggregation.
@@ -89,22 +92,23 @@ The Docker Compose configuration passes these variables into the PrairieLearn co
 
 ## Safety and grading behavior
 
-Generated and student-edited SQL executes against an in-memory SQLite database created from the configured CSV.
+Generated and student-edited code executes in a restricted backend appropriate to the selected output mode.
 
 Maintain these protections when changing the element:
 
 - Only `SELECT` or `WITH` queries are accepted.
 - SQLite authorizer callbacks deny writes and other non-read operations.
 - SQLite length, SQL length, column, instruction, and result-row limits constrain execution.
+- pandas and Polars execute through a restricted AST interpreter that denies imports, arbitrary calls, callbacks, file access, and network access.
 - The LLM call happens on the PrairieLearn server; browser code must never call the provider directly.
-- Student and reference SQL are graded by comparing result rows, not exact SQL text.
+- Student and reference code are graded by comparing result rows, not exact code text.
 - Row order and column names are currently ignored by grading; row values and multiplicity matter.
 - The result preview is limited independently from grading.
 
-The Save/Save & Grade distinction is implemented by `pl-intent-console.js`, which writes a hidden form value before submission. If changing markup or PrairieLearn integration, verify both paths:
+The Save/Save & Grade distinction is implemented by `pl-intent-console-dictionary.js`, which writes a hidden form value before submission. If changing markup or PrairieLearn integration, verify both paths:
 
-- Save: regenerate SQL, overwrite old SQL, increment generation count, and preview.
-- Save & Grade: keep edited SQL, preview it, and grade it.
+- Save: regenerate code, overwrite old code, increment generation count, and preview.
+- Save & Grade: keep edited code, preview it, and grade it.
 
 ## Local PrairieLearn workflow
 
@@ -140,10 +144,10 @@ The Compose service uses the published image `prairielearn/prairielearn:latest`;
 At minimum, run:
 
 ```bash
-python3 -m py_compile elements/pl-intent-console/pl-intent-console.py questions/english-to-sql-transactions/server.py
-node --check elements/pl-intent-console/pl-intent-console.js
-python3 -m json.tool elements/pl-intent-console/info.json >/dev/null
-python3 -m json.tool questions/english-to-sql-transactions/info.json >/dev/null
+python3 -m py_compile elements/pl-intent-console-dictionary/pl-intent-console-dictionary.py questions/english-to-sql-transactions-dictionary-tutorial/server.py
+node --check elements/pl-intent-console-dictionary/pl-intent-console-dictionary.js
+python3 -m json.tool elements/pl-intent-console-dictionary/info.json >/dev/null
+python3 -m json.tool questions/english-to-sql-transactions-dictionary-tutorial/info.json >/dev/null
 git diff --check
 ```
 

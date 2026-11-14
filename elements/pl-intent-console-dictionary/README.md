@@ -1,76 +1,45 @@
 # `pl-intent-console-dictionary` (draft)
 
-This course element uses one LLM pass to map a student's wording through an instructor-authored canonical dictionary, then a second LLM pass to convert the normalized plan into editable SQLite, pandas, or Polars code when the student clicks PrairieLearn's **Save** button. Clicking **Save & Grade** preserves and grades the code currently in the editor.
+This PrairieLearn course element translates an English analysis plan into editable SQLite, pandas, or Polars code. A first LLM pass maps the student's wording to an instructor-authored canonical dictionary; a second generates code from the validated normalized plan.
 
-## Local setup with Docker and Gemini
+- **Save** regenerates code, replaces edits, and refreshes the preview.
+- **Save & Grade** preserves and grades the code currently shown.
 
-Prerequisites:
+## Local setup
 
-- Docker Desktop, or another running Docker Engine with Docker Compose
-- A Gemini API key created in Google AI Studio
-
-From the repository root, copy the committed example configuration:
+Requirements: Docker with Compose and an API key for an OpenAI-compatible chat-completions endpoint.
 
 ```bash
 cp .devcontainer/.env.example .devcontainer/.env
 ```
 
-Open `.devcontainer/.env` and replace the placeholder with your own Gemini API key:
+Set the private, Git-ignored `.devcontainer/.env`:
 
 ```text
-ENGLISH_TO_SQL_API_KEY=replace-with-your-own-gemini-api-key
-ENGLISH_TO_SQL_MODEL=gemini-3.8-flash
+ENGLISH_TO_SQL_API_KEY=...
+ENGLISH_TO_SQL_MODEL=...
 ENGLISH_TO_SQL_API_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+ENGLISH_TO_SQL_TIMEOUT_SECONDS=20
 ```
 
-The real `.devcontainer/.env` file is ignored by Git. Never put the key in `question.html`, `server.py`, an element attribute, a client-side file, `.env.example`, or any committed file.
-
-Start PrairieLearn:
+Never put credentials in committed files, question parameters, browser code, submitted answers, logs, or feedback. Start PrairieLearn and open <http://localhost:3000>:
 
 ```bash
-docker compose \
-  --env-file .devcontainer/.env \
-  -f .devcontainer/docker-compose.yml \
-  up
+docker compose --env-file .devcontainer/.env -f .devcontainer/docker-compose.yml up
 ```
 
-Once the logs report that PrairieLearn is ready, open [http://localhost:3000](http://localhost:3000). Keep the terminal open while developing. To run the containers in the background instead, add `-d` after `up`.
+Add `-d` to run in the background; replace `up` with `down` to stop and remove the containers. For deployment, configure the same variables through the server's secret manager and allow outbound HTTPS. PrairieLearn's question lifecycle timeout must exceed both provider calls; the local configuration uses 60 seconds.
 
-Stop PrairieLearn and remove its containers when finished:
+## Authoring a question
 
-```bash
-docker compose \
-  --env-file .devcontainer/.env \
-  -f .devcontainer/docker-compose.yml \
-  down
-```
+Place the following in `serverFilesQuestion`:
 
-The downloaded Docker images and repository files remain available, so the same `up` command will start the environment again later.
+1. One or more source CSV files.
+2. A database schema describing the available tables.
+3. A canonical dictionary of allowed operations and modifiers.
+4. A question-specific intent specification for interpretations, defaults, overrides, and controlled failures.
 
-To verify that the API key reached the container without displaying it:
-
-```bash
-docker compose \
-  --env-file .devcontainer/.env \
-  -f .devcontainer/docker-compose.yml \
-  exec prairielearn \
-  sh -c 'test -n "$ENGLISH_TO_SQL_API_KEY" && echo "Gemini key is configured"'
-```
-
-For a deployed PrairieLearn server, configure the same environment variables through the deployment's secret-management system. The host must allow outbound HTTPS to the configured endpoint. `ENGLISH_TO_SQL_TIMEOUT_SECONDS` may optionally be set and defaults to `20`.
-
-PrairieLearn's question lifecycle timeout must be long enough for both provider calls. The local Compose setup loads `.devcontainer/prairielearn-config.json`, which sets `questionTimeoutMilliseconds` to 60 seconds so that generation can finish or report its own provider timeout.
-A deployed PrairieLearn administrator must configure an equivalent server-level timeout; this setting cannot be controlled by an individual question.
-
-## Instructor authoring quick start
-
-1. Put each source CSV in the question's `serverFilesQuestion` directory.
-2. Add a database-schema JSON file describing every available data table.
-3. Add a canonical dictionary defining the allowed operations and modifiers.
-4. Add an instructor intent specification describing question-specific rendering behavior, overrides, and failure conditions.
-5. Add the element to `question.html`, and set reference code in the selected output language under the name given by `reference-name` in `server.py`.
-
-For example:
+Set reference code under the `reference-name` key in `server.py`, using the same language as `output-mode`.
 
 ```html
 <pl-intent-console-dictionary
@@ -88,187 +57,97 @@ For example:
 </pl-intent-console-dictionary>
 ```
 
-`database-schema`, `dictionary`, and `intent-spec` are filenames relative to `serverFilesQuestion`. Supported `output-mode` values are `sql`, `pandas`, and `polars`.
+`database-schema`, `dictionary`, and `intent-spec` are filenames relative to `serverFilesQuestion`. The supported output modes are `sql`, `pandas`, and `polars`. In pandas and Polars modes, each table is preloaded as a DataFrame variable with its exact table name. Programs may contain only simple assignments and must finish with `result = ...`.
 
-For `pandas` and `polars`, each configured table is preloaded as a DataFrame variable with the table's exact name. Generated programs contain only simple assignments and must assign the final DataFrame to `result`. Reference code must follow the same contract and use the same output language as the question.
+The PrairieLearn environment must provide the selected package; the current local image includes pandas but not Polars. For temporary local testing, install Polars in the running container with `uv pip install --python /PrairieLearn/.venv/bin/python3 'polars>=1,<2'`. The installation is lost when the container is recreated; deployments should include Polars in their image. A missing package produces a configuration error without running student code.
 
-The PrairieLearn Python environment must provide the selected package. The current local image provides pandas but not Polars. For a temporary local Polars test installation in an already-running container:
-
-```bash
-docker compose \
-  --env-file .devcontainer/.env \
-  -f .devcontainer/docker-compose.yml \
-  exec prairielearn \
-  uv pip install --python /PrairieLearn/.venv/bin/python3 'polars>=1,<2'
-```
-
-That installation disappears when the container is recreated. A deployed course using `output-mode="polars"` should install Polars in its PrairieLearn image or Python environment. If a package is unavailable, the element reports a configuration error without executing student code.
-
-## Database schema format
-
-For a one-table question, the smallest schema is:
+## Database schema
 
 ```json
 {
   "tables": [
     {
       "name": "transactions",
-      "source": "transactions.csv"
-    }
-  ]
-}
-```
-
-For multiple tables, add an entry for each CSV-backed table:
-
-```json
-{
-  "tables": [
-    {
-      "name": "orders",
-      "source": "orders.csv",
-      "description": "One row per order.",
-      "columns": [
-        {"name": "order_id", "type": "INTEGER"},
-        {"name": "customer_id", "type": "TEXT"}
-      ]
-    },
-    {
-      "name": "customers",
-      "source": "customers.csv",
+      "source": "transactions.csv",
+      "description": "One row per transaction.",
       "columns": [
         {"name": "customer_id", "type": "TEXT"},
-        {"name": "region", "type": "TEXT"}
+        {"name": "total", "type": "REAL"}
       ]
     }
   ]
 }
 ```
 
-Schema rules:
+- `tables` must be a nonempty array with unique names and CSV sources.
+- CSV headers must be nonempty and case-insensitively unique.
+- Optional `columns` must match the CSV header and order exactly.
+- Column types may be `INTEGER`, `REAL`, or `TEXT`; omitted types are inferred.
+- Optional table and column descriptions are included in model context.
 
-- `tables` must be a nonempty array.
-- Every table needs a unique, nonempty SQL `name` and a CSV `source`.
-- Every CSV needs a nonempty header with case-insensitively unique column names.
-- Optional `columns` must exactly match the CSV header in the same order.
-- Optional column types are `INTEGER`, `REAL`, or `TEXT`; omitted types are inferred.
-- Optional table and column descriptions are included in the schema shown to the model.
+For backward compatibility, a single-table question may use `data-source` instead of `database-schema`; specify exactly one.
 
-The element validates the schema before generation and builds the model's backend-appropriate schema context automatically. Instructors do not need to repeat the database definition in the intent specification. For backward compatibility, a one-table question may use `data-source="transactions.csv"` instead of `database-schema`; specify exactly one.
+## Canonical dictionary
 
-## Canonical dictionary format
-
-Put each canonical phrase under `operations` or `modifiers` and define its meaning in one sentence. Instructors do not need to enumerate synonyms. The first model pass uses these definitions to identify explicit operations and modifiers in the student's plan, cites the exact source spans, and returns the appropriate canonical phrases. It may recognize any unambiguous ordinary-English wording that expresses a listed definition, but it may not infer operations from the assignment, schema, or likely answer.
+Define each canonical phrase and its meaning. Instructors do not need to enumerate synonyms.
 
 ```yaml
 operations:
-  group rows by: Divide rows into groups using one or more explicitly named columns.
-  compute sum of: Add the values of an explicitly named column or expression.
-  filter where: Apply a condition to an explicitly named column or aggregate.
+  group rows by: Divide rows into groups using explicitly named columns.
+  compute sum of: Add values from an explicitly named column or expression.
+  filter where: Apply a condition to a named column or aggregate.
 
 modifiers:
   greater than: Compare whether the left value is larger than the right value.
-  keep filtered rows: Confirm that the rows selected by the preceding filter are retained.
+  keep filtered rows: Retain rows selected by the preceding filter.
 ```
 
-Use an operation for wording that authorizes a data transformation, such as grouping, aggregation, filtering, sorting, limiting, or joining. Use a modifier only to refine a recognized operation. Keep definitions distinct enough that one explicit phrase does not plausibly match several entries. The server validates the first pass against the instructor's canonical entries, requires exact non-overlapping evidence from the student's plan, and requires at least one recognized operation before making the code-generation call. Unmatched wording is preserved as a possible argument or connector, but it cannot authorize another operation, comparison, or sort direction.
+Operations authorize transformations such as grouping, aggregation, filtering, sorting, limiting, or joining. Modifiers only refine recognized operations. Keep definitions distinct. The server requires exact, non-overlapping evidence from the student's plan and at least one operation. Unmatched wording may remain as an argument or connector, but cannot authorize another operation, comparison, or sort direction.
 
-For multi-table questions, include a canonical `join` operation if joins are allowed. The intent specification must require the student to provide both table names and the matching columns.
+With one configured table, the intent specification may allow students to omit its name. With multiple tables, students must name every table used. Joins must name both tables and their matching columns, and the dictionary must include a `join` operation.
 
-## Student plan requirements
+Before contacting the model, the server rejects question-like input, recognizable prompt injection, DataFrame code, and programming shorthand.
 
-Table-name requirements depend on the configured schema:
+The element already defines standard rendering for canonical operations. The intent specification should contain only question-specific interpretations, defaults, overrides, and conditions that return `PLAN_ERROR:<REASON>`; do not duplicate the operation dictionary there.
 
-- With one table, the student may omit its name when the question-specific intent specification allows the sole table to be used as backend scaffolding.
-- With multiple tables, the student must name every table used.
-- A join must name both tables and state the matching columns. The model may not introduce an unnamed table or invent a join.
+## Model boundary
 
-The dictionary for a transactions question can accept this English plan even though it does not say `transactions`:
+The mapping pass receives only the canonical dictionary and the student's English plan. The generation pass receives only:
 
-```text
-For each unique customer_id and unique transaction_id, sum their total dollar
-amount on each unique transaction. Filter for the sum to be greater than $200,
-then filter year to be equal to 2025.
-```
+- the generated schema and selected output mode;
+- the instructor intent specification;
+- the validated normalized plan and recognized operations/modifiers; and
+- configured table names explicitly mentioned in the plan.
 
-Before the mapping pass, the server rejects question-like input, recognizable prompt-injection attempts, and dataframe code or programming shorthand such as:
+Neither pass receives the assignment text, reference code, expected results, grading outcome, or hidden tests. The generation pass also does not receive unmatched original prose or dictionary audit entries. It returns one SQLite `SELECT`/`WITH` query, a restricted pandas/Polars program ending in `result`, or a controlled `PLAN_ERROR`.
 
-```text
-df = df[df['year'] == 2023] df.groupby('customer_id')
-```
+## Execution and grading
 
-## Intent specification and model boundary
+SQL runs against all configured tables in a restricted in-memory SQLite database; only read-only `SELECT` and `WITH` queries are allowed. pandas and Polars use a restricted AST interpreter that rejects imports, arbitrary functions and methods, callbacks, lambdas, comprehensions, private attributes, cross joins, file access, and network access. Size and execution limits apply in every mode.
 
-The element centrally defines standard SQLite, pandas, and Polars rendering for its canonical operations, so question-level intent specifications do not need an `operations:` section. An intent specification should contain only question-specific behavior, interpretations, defaults, overrides, and any conditions that produce `PLAN_ERROR:<REASON>`. Supported reasons cover missing or unsupported operations, tables, columns, comparisons, values, grouping columns, aggregate details, join conditions, sort details, row counts, and ambiguous details.
+Grading compares result values and multiplicity rather than code text. Row order and column labels are ignored. Failed screening, provider requests, or model validation preserve the previous code and do not consume the successful-generation limit, though every Save press counts as a telemetry attempt.
 
-The mapping pass receives only the instructor's dictionary mappings and the student's English plan. The code-generation pass receives only:
+The student's English is stored under `<answers-name>-source`; generated code is stored under `<answers-name>-generated-code`.
 
-- the schema generated from the configured database;
-- the selected output mode;
-- the instructor generation specification;
-- the validated dictionary-normalized plan;
-- exhaustive lists of recognized operations and modifiers; and
-- the configured table names explicitly mentioned in the plan.
+## Study telemetry
 
-It does not receive the original unmatched prose as a separate field, dictionary audit entries, assignment question, reference code, expected result, grading outcome, or hidden tests. In SQL mode it must return exactly one complete SQLite `SELECT` or `WITH` statement. In pandas or Polars mode it must return simple assignment statements ending in `result = ...`. It may instead return one controlled plan error.
-
-## Saving, previewing, and grading
-
-The element stores the student's English under `<answers-name>-source` and generated code under `<answers-name>-generated-code`.
-
-- **Save** maps and normalizes the plan, generates code in the configured output mode, overwrites prior code, and refreshes the preview.
-- **Save & Grade** preserves and grades the code currently visible in the editor; it does not regenerate code.
-- A failed local check, provider request, or model-output check preserves the previous code and does not increment the successful-generation limit. Study telemetry still counts every Save press as a generation attempt.
-
-In SQL mode, student and reference queries run against all configured tables in one restricted, in-memory SQLite database, and only read-only `SELECT` or `WITH` queries are accepted. In pandas and Polars modes, CSV-backed DataFrames execute through a restricted AST interpreter: imports, arbitrary functions and methods, callbacks, lambdas, comprehensions, private attributes, cross joins, file access, and network access are rejected. Input, join, syntax-tree, and intermediate-result limits constrain execution. Grading compares result rows and multiplicity rather than exact code; row order and column labels are ignored.
-
-## Study telemetry and question timer
-
-Set `time-limit-minutes` to show a per-question countdown and store elapsed time
-with each PrairieLearn submission. The timer is advisory: after it reaches zero,
-the participant is told to finish the current submission and move on.
-
-The element stores the following hidden answers under the configured
-`answers-name`, so they appear in PrairieLearn's submission history and
-`*_all_submissions.csv` download:
+Set `time-limit-minutes` to show an advisory countdown and record elapsed time. The element stores these hidden answer fields under `answers-name`:
 
 - `telemetry-started-at-ms` and `telemetry-elapsed-ms`;
-- `telemetry-save-count`, where every Save press is one generation attempt;
-- `telemetry-grade-count`, where every Save & Grade press is one answer attempt;
-- `telemetry-generation-failure-count`;
-- `telemetry-edit-count`, `telemetry-chars-inserted`, and
-  `telemetry-chars-deleted` for manual changes to the generated-code editor.
+- `telemetry-save-count`, `telemetry-grade-count`, and `telemetry-generation-failure-count`;
+- `telemetry-edit-count`, `telemetry-chars-inserted`, and `telemetry-chars-deleted`.
 
-PrairieLearn's submission score and timestamp can be combined with these fields
-to identify the first correct answer, time to correctness, and whether the answer
-arrived within the configured limit. The client-side edit counts describe edits
-that occurred before a submission; edits abandoned without submitting cannot be
-recovered.
+They appear in submission history and `*_all_submissions.csv`. Combine them with PrairieLearn scores and timestamps to identify time to first correct answer. Edits abandoned without submission cannot be recovered.
 
-## Server-side diagnostics
+## Diagnostics
 
-Every Save and Save & Grade submission emits labeled, multi-line events to
-`/tmp/pl-intent-console-dictionary.log` inside the PrairieLearn container. The element
-writes directly to this file because PrairieLearn treats stdout or stderr output during
-`parse()` as a course error. A logging failure is ignored so diagnostics can never block a
-submission.
+Each Save and Save & Grade writes labeled events to `/tmp/pl-intent-console-dictionary.log`, including screening, model requests and outputs, normalization, generated code, preview execution, and grading. Events have UTC timestamps and `trace_id` values; parse events for one button press share an ID, while grading uses its own.
 
-The log covers input screening, table filtering, both model requests and outputs, the
-dictionary-normalized plan and replacements, recognized operations and modifiers, generated
-code, preview execution, and grading. Events include a UTC timestamp. Each event has a `trace_id`; parse events for one button
-press share one ID, while grading uses its own ID.
-
-The log omits API credentials, authorization headers, system prompts, reference code, and
-reference rows. It contains student-authored text, dictionary mappings sent to the first
-model pass, normalized plans, and generated code, so production access and retention should follow the
-course's student-data policy. Follow it from the repository root with:
+The log omits credentials, authorization headers, system prompts, reference code, and reference rows. It does contain student text, dictionary mappings, normalized plans, and generated code; apply the course's student-data access and retention policy.
 
 ```bash
-docker compose \
-  --env-file .devcontainer/.env \
-  -f .devcontainer/docker-compose.yml \
+docker compose --env-file .devcontainer/.env -f .devcontainer/docker-compose.yml \
   exec prairielearn tail -f /tmp/pl-intent-console-dictionary.log
 ```
 
-Set `ENGLISH_TO_SQL_DICTIONARY_LOG_FILE` on the PrairieLearn service to use another writable
-path.
+Set `ENGLISH_TO_SQL_DICTIONARY_LOG_FILE` to choose another writable path. Logging failures never block submissions.
